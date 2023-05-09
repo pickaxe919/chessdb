@@ -194,7 +194,7 @@ function getMoves( $redis, $row, $depth ) {
 					if( count_pieces( $nextfen ) <= 7 ) {
 						if( abs( $item ) < 10000 ) {
 							$egtbresult = json_decode( file_get_contents( 'http://localhost:9000/standard?fen=' . urlencode( $nextfen ) ), TRUE );
-							if( $egtbresult !== FALSE ) {
+							if( $egtbresult !== NULL ) {
 								if( $egtbresult['checkmate'] ) {
 								}
 								else if( $egtbresult['stalemate'] ) {
@@ -214,14 +214,14 @@ function getMoves( $redis, $row, $depth ) {
 											if( $bestmove['category'] == 'blessed-loss' || $bestmove['category'] == 'maybe-loss' )
 												$nextscore = 20000 - $step;
 											else
-												$nextscore = 30000 - $step;
+												$nextscore = 25000 - $step;
 										}
 										else {
 											$step = $bestmove['dtz'];
 											if( $bestmove['category'] == 'maybe-win' || $bestmove['category'] == 'cursed-win' )
 												$nextscore = $step - 20000;
 											else
-												$nextscore = $step - 30000;
+												$nextscore = $step - 25000;
 										}
 										$moves1[ $key ] = -$nextscore;
 										$updatemoves[ $key ] = $nextscore;
@@ -319,16 +319,16 @@ function getMoves( $redis, $row, $depth ) {
 				asort( $moves1 );
 				$bestscore = end( $moves1 );
 				foreach( array_keys( array_intersect_key( $moves1, $loopdraws ) ) as $key ) {
-					if( $moves1[$key] == $bestscore && abs( $bestscore ) < 10000 ) {
+					if( $moves1[$key] == $bestscore ) {
 						$moves1[$key] = 0;
-						//if( !$isloop )
-						//	$updatemoves[$key] = 0;
 					}
 				}
 			}
 
-			unset( $GLOBALS['looptt'][$current_hash] );
-			unset( $GLOBALS['looptt'][$current_hash_bw] );
+			if( !$isloop ) {
+				unset( $GLOBALS['looptt'][$current_hash] );
+				unset( $GLOBALS['looptt'][$current_hash_bw] );
+			}
 		} else if( !$isloop ) {
 			$GLOBALS['counter']++;
 			$GLOBALS['boardtt'][$current_hash] = 1;

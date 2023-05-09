@@ -80,7 +80,6 @@ class MyRWLock {
 }
 
 $readwrite_queue = new MyRWLock( "ChessDBLockQueue" );
-$readwrite_sel = new MyRWLock( "ChessDBLockSel" );
 
 function getWinRate( $score ) {
 	return number_format( 100 / ( 1 + exp( -$score / 330 ) ), 2 );
@@ -228,9 +227,15 @@ function getAllScores( $redis, $row ) {
 						if ( $item == -30001 ) {
 							$item = 0;
 						}
-						$finals[$key] = 1;
+						if( $key <= ccbgetLRmove( $key ) )
+							$finals[$key] = 1;
+						else
+							$finals[ccbgetLRmove( $key )] = 1;
 					}
-					$moves[$key] = -$item;
+					if( $key <= ccbgetLRmove( $key ) )
+						$moves[$key] = -$item;
+					else
+						$moves[ccbgetLRmove( $key )] = -$item;
 				}
 			}
 		}
@@ -243,9 +248,15 @@ function getAllScores( $redis, $row ) {
 						if ( $item == -30001 ) {
 							$item = 0;
 						}
-						$finals[ccbgetBWmove( $key )] = 1;
+						if( ccbgetBWmove( $key ) <= ccbgetLRBWmove( $key ) )
+							$finals[ccbgetBWmove( $key )] = 1;
+						else
+							$finals[ccbgetLRBWmove( $key )] = 1;
 					}
-					$moves[ccbgetBWmove( $key )] = -$item;
+					if( ccbgetBWmove( $key ) <= ccbgetLRBWmove( $key ) )
+						$moves[ccbgetBWmove( $key )] = -$item;
+					else
+						$moves[ccbgetLRBWmove( $key )] = -$item;
 				}
 			}
 		}
@@ -347,7 +358,14 @@ function updateScore( $redis, $row, $updatemoves ) {
 	else {
 		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
 		if( $minindex == 0 ) {
-			if( $redis->hMSet( hex2bin($minhexfen), $updatemoves ) === FALSE )
+			$newmoves = array();
+			foreach( $updatemoves as $key => $newscore ) {
+				if( $key <= ccbgetLRmove( $key ) )
+					$newmoves[$key] = $newscore;
+				else
+					$newmoves[ccbgetLRmove( $key )] = $newscore;
+			}
+			if( $redis->hMSet( hex2bin($minhexfen), $newmoves ) === FALSE )
 				throw new RedisException( 'Server operation error.' );
 			foreach( $updatemoves as $key => $newscore ) {
 				if( $key < ccbgetLRmove( $key ) )
@@ -360,11 +378,14 @@ function updateScore( $redis, $row, $updatemoves ) {
 		else if( $minindex == 1 ) {
 			$newmoves = array();
 			foreach( $updatemoves as $key => $newscore ) {
-				$newmoves[ccbgetBWmove( $key )] = $newscore;
+				if( ccbgetBWmove( $key ) <= ccbgetLRBWmove( $key ) )
+					$newmoves[ccbgetBWmove( $key )] = $newscore;
+				else
+					$newmoves[ccbgetLRBWmove( $key )] = $newscore;
 			}
 			if( $redis->hMSet( hex2bin($minhexfen), $newmoves ) === FALSE )
 				throw new RedisException( 'Server operation error.' );
-			foreach( array_keys( $updatemoves ) as $key ) {
+			foreach( $updatemoves as $key => $newscore ) {
 				if( ccbgetBWmove( $key ) < ccbgetLRBWmove( $key ) )
 				{
 					if( $redis->hDel( hex2bin($minhexfen), ccbgetLRBWmove( $key ) ) === FALSE )
@@ -376,7 +397,7 @@ function updateScore( $redis, $row, $updatemoves ) {
 }
 function updateQueue( $row, $key, $priority ) {
 	global $readwrite_queue;
-	$m = new MongoClient('mongodb://localhost');
+	$m = new MongoClient('mongodb:///tmp/mongodb-27017.sock');
 	$collection = $m->selectDB('ccdbqueue')->selectCollection('queuedb');
 	$LRfen = ccbgetLRfen( $row );
 	$BWfen = ccbgetBWfen( $row );
@@ -530,8 +551,7 @@ function updateQueue( $row, $key, $priority ) {
 	}
 }
 function updateSel( $row, $priority ) {
-	global $readwrite_sel;
-	$m = new MongoClient('mongodb://localhost');
+	$m = new MongoClient('mongodb:///tmp/mongodb-27017.sock');
 	$collection = $m->selectDB('ccdbsel')->selectCollection('seldb');
 	$LRfen = ccbgetLRfen( $row );
 	$BWfen = ccbgetBWfen( $row );
@@ -544,7 +564,6 @@ function updateSel( $row, $priority ) {
 		} else {
 			$doc = array( 'e' => new MongoDate() );
 		}
-		$readwrite_sel->readlock();
 		do {
 			try {
 				$tryAgain = false;
@@ -554,7 +573,6 @@ function updateSel( $row, $priority ) {
 				$tryAgain = true;
 			}
 		} while($tryAgain);
-		$readwrite_sel->readunlock();
 	}
 	else {
 		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
@@ -563,7 +581,6 @@ function updateSel( $row, $priority ) {
 		} else {
 			$doc = array( 'e' => new MongoDate() );
 		}
-		$readwrite_sel->readlock();
 		do {
 			try {
 				$tryAgain = false;
@@ -573,7 +590,6 @@ function updateSel( $row, $priority ) {
 				$tryAgain = true;
 			}
 		} while($tryAgain);
-		$readwrite_sel->readunlock();
 	}
 }
 function updatePly( $redis, $row, $ply ) {
@@ -621,6 +637,9 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 		$depth++;
 	}
 	unset( $moves1['ply'] );
+
+	if( $depth > 0 )
+		$moves2['ply'] = $depth - 1;
 
 	if( $update )
 	{
@@ -686,8 +705,7 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 		if( count( $updatemoves ) > 0 )
 			updateScore( $redis, $row, $updatemoves );
 		$memcache_obj = new Memcache();
-		$memcache_obj->pconnect('localhost', 11211);
-		if( !$memcache_obj )
+		if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 			throw new Exception( 'Memcache error.' );
 		if( count_pieces( $row ) >= 10 && count_attackers( $row ) >= 4 ) {
 			$allmoves = ccbmovegen( $row );
@@ -702,6 +720,7 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 						continue;
 					$findmoves[$key] = $item;
 				}
+				$learnArr = array();
 				foreach( $findmoves as $key => $item ) {
 					$nextfen = ccbmovemake( $row, $key );
 					list( $nextmoves, $variations ) = getMoves( $redis, $nextfen, array(), false, false, false, $depth );
@@ -709,9 +728,11 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 						updateQueue( $row, $key, true );
 					}
 					else if( $learn ) {
-						$memcache_obj->set( 'Learn::' . $nextfen, array( $row, $key ), 0, 300 );
+						$learnArr['Learn::' . $nextfen] = array( $row, $key );
 					}
 				}
+				if( count( $learnArr ) > 0 )
+					$memcache_obj->set( $learnArr, NULL, 0, 300 );
 			}
 		}
 		$autolearn = $memcache_obj->get( 'Learn::' . $row );
@@ -775,22 +796,15 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 	if( $GLOBALS['counter'] < $enumlimit )
 	{
 		$recurse = false;
-		$current_hash = hash( 'md5', $row );
-		$current_hash_bw = hash( 'md5', $BWfen );
-		if( $hasLRmirror )
+		if( !isset( $GLOBALS['boardtt'][$row] ) )
 		{
-			$current_hash_lr = hash( 'md5', $LRfen );
-			$current_hash_lrbw = hash( 'md5', $LRBWfen );
-		}
-		if( !isset( $GLOBALS['boardtt'][$current_hash] ) )
-		{
-			if( !isset( $GLOBALS['boardtt'][$current_hash_bw] ) )
+			if( !isset( $GLOBALS['boardtt'][$BWfen] ) )
 			{
 				if( $hasLRmirror )
 				{
-					if( !isset( $GLOBALS['boardtt'][$current_hash_lr] ) )
+					if( !isset( $GLOBALS['boardtt'][$LRfen] ) )
 					{
-						if( !isset( $GLOBALS['boardtt'][$current_hash_lrbw] ) )
+						if( !isset( $GLOBALS['boardtt'][$LRBWfen] ) )
 						{
 							$recurse = true;
 						}
@@ -806,27 +820,25 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 		{
 			$updatemoves = array();
 			$isloop = true;
-			if( !isset( $GLOBALS['historytt'][$current_hash] ) )
+			if( !isset( $GLOBALS['historytt'][$row] ) )
 			{
-				if( !isset( $GLOBALS['historytt'][$current_hash_bw] ) )
+				if( !isset( $GLOBALS['historytt'][$BWfen] ) )
 				{
 					if( $hasLRmirror )
 					{
-						if( !isset( $GLOBALS['historytt'][$current_hash_lr] ) )
+						if( !isset( $GLOBALS['historytt'][$LRfen] ) )
 						{
-							if( !isset( $GLOBALS['historytt'][$current_hash_lrbw] ) )
+							if( !isset( $GLOBALS['historytt'][$LRBWfen] ) )
 							{
 								$isloop = false;
 							}
 							else
 							{
-								$loop_hash_start = $current_hash_lrbw;
 								$loop_fen_start = $LRBWfen;
 							}
 						}
 						else
 						{
-							$loop_hash_start = $current_hash_lr;
 							$loop_fen_start = $LRfen;
 						}
 					}
@@ -837,13 +849,11 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 				}
 				else
 				{
-					$loop_hash_start = $current_hash_bw;
 					$loop_fen_start = $BWfen;
 				}
 			}
 			else
 			{
-				$loop_hash_start = $current_hash;
 				$loop_fen_start = $row;
 			}
 
@@ -858,7 +868,7 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 					if( !$hasLRmirror && $key != ccbgetLRmove( $key ) ) {
 						$knownmoves[ccbgetLRmove( $key )] = 0;
 					}
-					if( ( $ply == 0 && $resetlimit && $item > -150 ) || ( $item >= $throttle || $item == end( $moves1 ) ) ) {
+					if( ( $ply == 0 && $resetlimit && $item > -10000 ) || ( $item >= $throttle || $item == end( $moves1 ) ) ) {
 						$moves2[ $key ] = $item;
 					}
 				}
@@ -867,7 +877,9 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 
 				if( $ply == 0 ) {
 					$GLOBALS['movecnt'] = array();
+					$isfirst = true;
 				}
+
 				foreach( $moves2 as $key => $item ) {
 					if( $resetlimit )
 						$GLOBALS['counter'] = 0;
@@ -884,16 +896,21 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 						continue;
 					}
 					$nextfen = ccbmovemake( $row, $key );
-					$GLOBALS['historytt'][$current_hash]['fen'] = $nextfen;
-					$GLOBALS['historytt'][$current_hash]['move'] = $key;
+					$GLOBALS['historytt'][$row]['fen'] = $nextfen;
+					$GLOBALS['historytt'][$row]['move'] = $key;
 					$nextmoves = getMovesWithCheck( $redis, $nextfen, array(), $ply + 1, $enumlimit, false, false, $depth );
-					unset( $GLOBALS['historytt'][$current_hash] );
+					unset( $GLOBALS['historytt'][$row] );
 					if( isset( $GLOBALS['loopcheck'] ) ) {
-						$GLOBALS['looptt'][$current_hash][$key] = $GLOBALS['loopcheck'];
+						$GLOBALS['looptt'][$row][$key] = $GLOBALS['loopcheck'];
 						unset( $GLOBALS['loopcheck'] );
 					}
-					if( $ply == 0 )
+					if( $ply == 0 ) {
 						$GLOBALS['movecnt'][$key] = $GLOBALS['counter1'];
+						if( $resetlimit && $isfirst ) {
+							$enumlimit = ( int )( $enumlimit / count( $moves2 ) ) + 10;
+							$isfirst = false;
+						}
+					}
 
 					if( count( $nextmoves ) > 0 ) {
 						arsort( $nextmoves );
@@ -947,12 +964,11 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 					$allmoves = ccbmovegen( $row );
 					if( count( $allmoves ) > count( $knownmoves ) ) {
 						if( count( $knownmoves ) > 0 && count( $knownmoves ) < 5 ) {
-							updateSel( $row, false );
+							updateSel( $row, $ply == 0 ? true : false );
 						}
 						if( $ply == 0 ) {
 							$memcache_obj = new Memcache();
-							$memcache_obj->pconnect('localhost', 11211);
-							if( !$memcache_obj )
+							if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 								throw new Exception( 'Memcache error.' );
 							$allmoves = array_diff_key( $allmoves, $knownmoves );
 							$findmoves = array();
@@ -961,12 +977,15 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 									continue;
 								$findmoves[$key] = $item;
 							}
+							$learnArr = array();
 							foreach( $findmoves as $key => $item ) {
 								$nextfen = ccbmovemake( $row, $key );
 								if( $learn ) {
-									$memcache_obj->set( 'Learn::' . $nextfen, array( $row, $key ), 0, 300 );
+									$learnArr['Learn::' . $nextfen] = array( $row, $key );
 								}
 							}
+							if( count( $learnArr ) > 0 )
+								$memcache_obj->set( $learnArr, NULL, 0, 300 );
 							$autolearn = $memcache_obj->get( 'Learn::' . $row );
 							if( $autolearn !== FALSE ) {
 								$memcache_obj->delete( 'Learn::' . $row );
@@ -994,45 +1013,44 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 			}
 			else
 			{
-				$loop_hash = $loop_hash_start;
+				$loop_fen = $loop_fen_start;
 				$loopmoves = array();
 				do
 				{
-					array_push( $loopmoves, $GLOBALS['historytt'][$loop_hash]['move'] );
-					$loopfen = $GLOBALS['historytt'][$loop_hash]['fen'];
-					$loop_hash = hash( 'md5', $loopfen );
-					if( !isset( $GLOBALS['historytt'][$loop_hash] ) )
+					array_push( $loopmoves, $GLOBALS['historytt'][$loop_fen]['move'] );
+					$loop_fen = $GLOBALS['historytt'][$loop_fen]['fen'];
+					if( !isset( $GLOBALS['historytt'][$loop_fen] ) )
 						break;
 				}
-				while( $loop_hash != $current_hash && $loop_hash != $current_hash_bw && ( !$hasLRmirror || ( $hasLRmirror && $loop_hash != $current_hash_lr && $loop_hash != $current_hash_lrbw ) ) );
+				while( $loop_fen != $row && $loop_fen != $BWfen && ( !$hasLRmirror || ( $hasLRmirror && $loop_fen != $LRfen && $loop_fen != $LRBWfen ) ) );
 				$loopstatus = ccbrulecheck( $loop_fen_start, $loopmoves );
 				if( $loopstatus > 0 )
-					$GLOBALS['looptt'][$loop_hash_start][$GLOBALS['historytt'][$loop_hash_start]['move']] = $loopstatus;
+					$GLOBALS['looptt'][$loop_fen_start][$GLOBALS['historytt'][$loop_fen_start]['move']] = $loopstatus;
 			}
 			$loopinfo = array();
-			if( isset( $GLOBALS['looptt'][$current_hash] ) )
+			if( isset( $GLOBALS['looptt'][$row] ) )
 			{
-				foreach( $GLOBALS['looptt'][$current_hash] as $key => $entry ) {
+				foreach( $GLOBALS['looptt'][$row] as $key => $entry ) {
 					$loopinfo[$key] = $entry;
 				}
 			}
-			if( isset( $GLOBALS['looptt'][$current_hash_bw] ) )
+			if( isset( $GLOBALS['looptt'][$BWfen] ) )
 			{
-				foreach( $GLOBALS['looptt'][$current_hash_bw] as $key => $entry ) {
+				foreach( $GLOBALS['looptt'][$BWfen] as $key => $entry ) {
 					$loopinfo[ccbgetBWmove( $key )] = $entry;
 				}
 			}
 			if( $hasLRmirror )
 			{
-				if( isset( $GLOBALS['looptt'][$current_hash_lr] ) )
+				if( isset( $GLOBALS['looptt'][$LRfen] ) )
 				{
-					foreach( $GLOBALS['looptt'][$current_hash_lr] as $key => $entry ) {
+					foreach( $GLOBALS['looptt'][$LRfen] as $key => $entry ) {
 						$loopinfo[ccbgetLRmove( $key )] = $entry;
 					}
 				}
-				if( isset( $GLOBALS['looptt'][$current_hash_lrbw] ) )
+				if( isset( $GLOBALS['looptt'][$LRBWfen] ) )
 				{
-					foreach( $GLOBALS['looptt'][$current_hash_lrbw] as $key => $entry ) {
+					foreach( $GLOBALS['looptt'][$LRBWfen] as $key => $entry ) {
 						$loopinfo[ccbgetLRBWmove( $key )] = $entry;
 					}
 				}
@@ -1053,53 +1071,42 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 					asort( $moves1 );
 					$bestscore = end( $moves1 );
 					foreach( array_keys( array_intersect_key( $moves1, $loopdraws ) ) as $key ) {
-						if( $moves1[$key] == $bestscore && abs( $bestscore ) < 10000 ) {
+						if( $moves1[$key] == $bestscore ) {
 							$moves1[$key] = 0;
-							//if( !$isloop )
-							//	$updatemoves[$key] = 0;
 						}
 					}
 				}
 				if( count( $loopmebans ) > 0 ) {
 					$moves2 = array_diff_key( $moves1, $loopmebans );
 					if( count( $moves2 ) > 0 ) {
-						asort( $moves2 );
-						$bestscore = end( $moves2 );
-						foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
-							$moves1[$key] = $bestscore;
-							if( !$isloop )
-								$updatemoves[$key] = -$bestscore;
+						if( $isloop ) {
+							asort( $moves2 );
+							$bestscore = end( $moves2 );
+							foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
+								$moves1[$key] = $bestscore;
+							}
 						}
 					}
 					else {
-						$allmoves = ccbmovegen( $row );
-						$moves3 = array_diff_key( $allmoves, $loopmebans );
-						if( count( $moves3 ) > 0 ) {
-							$GLOBALS['loopcheck'] = 3;
-						}
-						else {
-							foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
-								$moves1[$key] = -30000;
-								if( !$isloop )
-									$updatemoves[$key] = 30000;
-							}
-						}
+						$GLOBALS['loopcheck'] = 3;
 					}
 				}
 				if( count( $loopoppbans ) > 0 ) {
 					$GLOBALS['loopcheck'] = 2;
 				}
 
-				unset( $GLOBALS['looptt'][$current_hash] );
-				unset( $GLOBALS['looptt'][$current_hash_bw] );
-				if( $hasLRmirror )
-				{
-					unset( $GLOBALS['looptt'][$current_hash_lr] );
-					unset( $GLOBALS['looptt'][$current_hash_lrbw] );
+				if( !$isloop ) {
+					unset( $GLOBALS['looptt'][$row] );
+					unset( $GLOBALS['looptt'][$BWfen] );
+					if( $hasLRmirror )
+					{
+						unset( $GLOBALS['looptt'][$LRfen] );
+						unset( $GLOBALS['looptt'][$LRBWfen] );
+					}
 				}
 			}
 			else if( !$isloop )
-				$GLOBALS['boardtt'][$current_hash] = 1;
+				$GLOBALS['boardtt'][$row] = 1;
 
 			if( count( $updatemoves ) > 0 )
 				updateScore( $redis, $row, $updatemoves );
@@ -1120,7 +1127,7 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 	}
 	return $moves1;
 }
-function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $learn, $depth, &$pv ) {
+function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $learn, $depth, &$pv, $stable ) {
 	list( $moves1, $finals ) = getAllScores( $redis, $row );
 	$LRfen = ccbgetLRfen( $row );
 	$BWfen = ccbgetBWfen( $row );
@@ -1148,22 +1155,15 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 	if( $GLOBALS['counter'] < $enumlimit )
 	{
 		$recurse = false;
-		$current_hash = hash( 'md5', $row );
-		$current_hash_bw = hash( 'md5', $BWfen );
-		if( $hasLRmirror )
+		if( !isset( $GLOBALS['boardtt'][$row] ) )
 		{
-			$current_hash_lr = hash( 'md5', $LRfen );
-			$current_hash_lrbw = hash( 'md5', $LRBWfen );
-		}
-		if( !isset( $GLOBALS['boardtt'][$current_hash] ) )
-		{
-			if( !isset( $GLOBALS['boardtt'][$current_hash_bw] ) )
+			if( !isset( $GLOBALS['boardtt'][$BWfen] ) )
 			{
 				if( $hasLRmirror )
 				{
-					if( !isset( $GLOBALS['boardtt'][$current_hash_lr] ) )
+					if( !isset( $GLOBALS['boardtt'][$LRfen] ) )
 					{
-						if( !isset( $GLOBALS['boardtt'][$current_hash_lrbw] ) )
+						if( !isset( $GLOBALS['boardtt'][$LRBWfen] ) )
 						{
 							$recurse = true;
 						}
@@ -1179,27 +1179,25 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 		{
 			$updatemoves = array();
 			$isloop = true;
-			if( !isset( $GLOBALS['historytt'][$current_hash] ) )
+			if( !isset( $GLOBALS['historytt'][$row] ) )
 			{
-				if( !isset( $GLOBALS['historytt'][$current_hash_bw] ) )
+				if( !isset( $GLOBALS['historytt'][$BWfen] ) )
 				{
 					if( $hasLRmirror )
 					{
-						if( !isset( $GLOBALS['historytt'][$current_hash_lr] ) )
+						if( !isset( $GLOBALS['historytt'][$LRfen] ) )
 						{
-							if( !isset( $GLOBALS['historytt'][$current_hash_lrbw] ) )
+							if( !isset( $GLOBALS['historytt'][$LRBWfen] ) )
 							{
 								$isloop = false;
 							}
 							else
 							{
-								$loop_hash_start = $current_hash_lrbw;
 								$loop_fen_start = $LRBWfen;
 							}
 						}
 						else
 						{
-							$loop_hash_start = $current_hash_lr;
 							$loop_fen_start = $LRfen;
 						}
 					}
@@ -1210,13 +1208,11 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 				}
 				else
 				{
-					$loop_hash_start = $current_hash_bw;
 					$loop_fen_start = $BWfen;
 				}
 			}
 			else
 			{
-				$loop_hash_start = $current_hash;
 				$loop_fen_start = $row;
 			}
 
@@ -1231,12 +1227,57 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 					if( !$hasLRmirror && $key != ccbgetLRmove( $key ) ) {
 						$knownmoves[ccbgetLRmove( $key )] = 0;
 					}
-					if( ( $ply == 0 && $item > -150 ) || ( $item >= $throttle || $item == end( $moves1 ) ) ) {
+					if( ( $ply == 0 && $item > -10000 ) || ( $item >= $throttle || $item == end( $moves1 ) ) ) {
 						$moves2[ $key ] = $item;
 					}
 				}
-				shuffle_assoc( $moves2 );
-				arsort( $moves2 );
+				if( !$stable )
+				{
+					shuffle_assoc( $moves2 );
+					arsort( $moves2 );
+				}
+				else
+				{
+					$moves3 = array();
+					foreach( $moves2 as $key => $item ) {
+						$moves3[ $key ][0] = 0;
+						$moves3[ $key ][1] = 0;
+						if( isset( $finals[ $key ] ) )
+							continue;
+						$nextfen = ccbmovemake( $row, $key );
+						list( $nextmoves, $variations ) = getMoves( $redis, $nextfen, array(), false, false, false, $depth );
+						if( count( $nextmoves ) > 0 ) {
+							arsort( $nextmoves );
+							$nextscore = reset( $nextmoves );
+							$throttle = getthrottle( $nextscore );
+							$nextsum = 0;
+							$nextcount = 0;
+							$totalvalue = 0;
+							foreach( $nextmoves as $record => $score ) {
+								if( $score >= $throttle ) {
+									$nextcount++;
+									$nextsum = $nextsum + $score;
+									$totalvalue = $totalvalue + $nextsum;
+								}
+								else
+									break;
+							}
+							$moves3[ $key ][0] = count( $nextmoves );
+							$moves3[ $key ][1] = $nextcount;
+						}
+					}
+					uksort( $moves2, function ( $a, $b ) use ( $moves2, $moves3 ) {
+						if( $moves2[$a] != $moves2[$b] ) {
+							return $moves2[$b] - $moves2[$a];
+						} else if( $moves3[$a][1] != $moves3[$b][1] ) {
+							return $moves3[$a][1] - $moves3[$b][1];
+						} else if( $moves3[$a][0] != $moves3[$b][0] ) {
+							return $moves3[$b][0] - $moves3[$a][0];
+						} else {
+							return $a - $b;
+						}
+					} );
+				}
 				foreach( $moves2 as $key => $item ) {
 					$GLOBALS['counter']++;
 					if( $isbest ) {
@@ -1247,13 +1288,13 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 						continue;
 					}
 					$nextfen = ccbmovemake( $row, $key );
-					$GLOBALS['historytt'][$current_hash]['fen'] = $nextfen;
-					$GLOBALS['historytt'][$current_hash]['move'] = $key;
-					$nextmoves = getAnalysisPath( $redis, $nextfen, array(), $ply + 1, $enumlimit, $isbest, false, $depth, $pv );
+					$GLOBALS['historytt'][$row]['fen'] = $nextfen;
+					$GLOBALS['historytt'][$row]['move'] = $key;
+					$nextmoves = getAnalysisPath( $redis, $nextfen, array(), $ply + 1, $enumlimit, $isbest, false, $depth, $pv, $stable );
 					$isbest = false;
-					unset( $GLOBALS['historytt'][$current_hash] );
+					unset( $GLOBALS['historytt'][$row] );
 					if( isset( $GLOBALS['loopcheck'] ) ) {
-						$GLOBALS['looptt'][$current_hash][$key] = $GLOBALS['loopcheck'];
+						$GLOBALS['looptt'][$row][$key] = $GLOBALS['loopcheck'];
 						unset( $GLOBALS['loopcheck'] );
 					}
 					if( count( $nextmoves ) > 0 ) {
@@ -1308,12 +1349,11 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 					$allmoves = ccbmovegen( $row );
 					if( count( $allmoves ) > count( $knownmoves ) ) {
 						if( count( $knownmoves ) > 0 && count( $knownmoves ) < 5 ) {
-							updateSel( $row, false );
+							updateSel( $row, $ply == 0 ? true : false );
 						}
 						if( $ply == 0 ) {
 							$memcache_obj = new Memcache();
-							$memcache_obj->pconnect('localhost', 11211);
-							if( !$memcache_obj )
+							if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 								throw new Exception( 'Memcache error.' );
 							$allmoves = array_diff_key( $allmoves, $knownmoves );
 							$findmoves = array();
@@ -1322,12 +1362,15 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 									continue;
 								$findmoves[$key] = $item;
 							}
+							$learnArr = array();
 							foreach( $findmoves as $key => $item ) {
 								$nextfen = ccbmovemake( $row, $key );
 								if( $learn ) {
-									$memcache_obj->set( 'Learn::' . $nextfen, array( $row, $key ), 0, 300 );
+									$learnArr['Learn::' . $nextfen] = array( $row, $key );
 								}
 							}
+							if( count( $learnArr ) > 0 )
+								$memcache_obj->set( $learnArr, NULL, 0, 300 );
 							$autolearn = $memcache_obj->get( 'Learn::' . $row );
 							if( $autolearn !== FALSE ) {
 								$memcache_obj->delete( 'Learn::' . $row );
@@ -1339,45 +1382,44 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 			}
 			else
 			{
-				$loop_hash = $loop_hash_start;
+				$loop_fen = $loop_fen_start;
 				$loopmoves = array();
 				do
 				{
-					array_push( $loopmoves, $GLOBALS['historytt'][$loop_hash]['move'] );
-					$loopfen = $GLOBALS['historytt'][$loop_hash]['fen'];
-					$loop_hash = hash( 'md5', $loopfen );
-					if( !isset( $GLOBALS['historytt'][$loop_hash] ) )
+					array_push( $loopmoves, $GLOBALS['historytt'][$loop_fen]['move'] );
+					$loop_fen = $GLOBALS['historytt'][$loop_fen]['fen'];
+					if( !isset( $GLOBALS['historytt'][$loop_fen] ) )
 						break;
 				}
-				while( $loop_hash != $current_hash && $loop_hash != $current_hash_bw && ( !$hasLRmirror || ( $hasLRmirror && $loop_hash != $current_hash_lr && $loop_hash != $current_hash_lrbw ) ) );
+				while( $loop_fen != $row && $loop_fen != $BWfen && ( !$hasLRmirror || ( $hasLRmirror && $loop_fen != $LRfen && $loop_fen != $LRBWfen ) ) );
 				$loopstatus = ccbrulecheck( $loop_fen_start, $loopmoves );
 				if( $loopstatus > 0 )
-					$GLOBALS['looptt'][$loop_hash_start][$GLOBALS['historytt'][$loop_hash_start]['move']] = $loopstatus;
+					$GLOBALS['looptt'][$loop_fen_start][$GLOBALS['historytt'][$loop_fen_start]['move']] = $loopstatus;
 			}
 			$loopinfo = array();
-			if( isset( $GLOBALS['looptt'][$current_hash] ) )
+			if( isset( $GLOBALS['looptt'][$row] ) )
 			{
-				foreach( $GLOBALS['looptt'][$current_hash] as $key => $entry ) {
+				foreach( $GLOBALS['looptt'][$row] as $key => $entry ) {
 					$loopinfo[$key] = $entry;
 				}
 			}
-			if( isset( $GLOBALS['looptt'][$current_hash_bw] ) )
+			if( isset( $GLOBALS['looptt'][$BWfen] ) )
 			{
-				foreach( $GLOBALS['looptt'][$current_hash_bw] as $key => $entry ) {
+				foreach( $GLOBALS['looptt'][$BWfen] as $key => $entry ) {
 					$loopinfo[ccbgetBWmove( $key )] = $entry;
 				}
 			}
 			if( $hasLRmirror )
 			{
-				if( isset( $GLOBALS['looptt'][$current_hash_lr] ) )
+				if( isset( $GLOBALS['looptt'][$LRfen] ) )
 				{
-					foreach( $GLOBALS['looptt'][$current_hash_lr] as $key => $entry ) {
+					foreach( $GLOBALS['looptt'][$LRfen] as $key => $entry ) {
 						$loopinfo[ccbgetLRmove( $key )] = $entry;
 					}
 				}
-				if( isset( $GLOBALS['looptt'][$current_hash_lrbw] ) )
+				if( isset( $GLOBALS['looptt'][$LRBWfen] ) )
 				{
-					foreach( $GLOBALS['looptt'][$current_hash_lrbw] as $key => $entry ) {
+					foreach( $GLOBALS['looptt'][$LRBWfen] as $key => $entry ) {
 						$loopinfo[ccbgetLRBWmove( $key )] = $entry;
 					}
 				}
@@ -1398,53 +1440,42 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 					asort( $moves1 );
 					$bestscore = end( $moves1 );
 					foreach( array_keys( array_intersect_key( $moves1, $loopdraws ) ) as $key ) {
-						if( $moves1[$key] == $bestscore && abs( $bestscore ) < 10000 ) {
+						if( $moves1[$key] == $bestscore ) {
 							$moves1[$key] = 0;
-							//if( !$isloop )
-							//	$updatemoves[$key] = 0;
 						}
 					}
 				}
 				if( count( $loopmebans ) > 0 ) {
 					$moves2 = array_diff_key( $moves1, $loopmebans );
 					if( count( $moves2 ) > 0 ) {
-						asort( $moves2 );
-						$bestscore = end( $moves2 );
-						foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
-							$moves1[$key] = $bestscore;
-							if( !$isloop )
-								$updatemoves[$key] = -$bestscore;
+						if( $isloop ) {
+							asort( $moves2 );
+							$bestscore = end( $moves2 );
+							foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
+								$moves1[$key] = $bestscore;
+							}
 						}
 					}
 					else {
-						$allmoves = ccbmovegen( $row );
-						$moves3 = array_diff_key( $allmoves, $loopmebans );
-						if( count( $moves3 ) > 0 ) {
-							$GLOBALS['loopcheck'] = 3;
-						}
-						else {
-							foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
-								$moves1[$key] = -30000;
-								if( !$isloop )
-									$updatemoves[$key] = 30000;
-							}
-						}
+						$GLOBALS['loopcheck'] = 3;
 					}
 				}
 				if( count( $loopoppbans ) > 0 ) {
 					$GLOBALS['loopcheck'] = 2;
 				}
 
-				unset( $GLOBALS['looptt'][$current_hash] );
-				unset( $GLOBALS['looptt'][$current_hash_bw] );
-				if( $hasLRmirror )
-				{
-					unset( $GLOBALS['looptt'][$current_hash_lr] );
-					unset( $GLOBALS['looptt'][$current_hash_lrbw] );
+				if( !$isloop ) {
+					unset( $GLOBALS['looptt'][$row] );
+					unset( $GLOBALS['looptt'][$BWfen] );
+					if( $hasLRmirror )
+					{
+						unset( $GLOBALS['looptt'][$LRfen] );
+						unset( $GLOBALS['looptt'][$LRBWfen] );
+					}
 				}
 			}
 			else if( !$isloop )
-				$GLOBALS['boardtt'][$current_hash] = 1;
+				$GLOBALS['boardtt'][$row] = 1;
 
 			if( count( $updatemoves ) > 0 )
 				updateScore( $redis, $row, $updatemoves );
@@ -1481,7 +1512,8 @@ function getEngineMove( $row, $movelist, $maxtime ) {
 		$writefd = NULL;
 		$errfd = NULL;
 		stream_set_blocking( $pipes[1], FALSE );
-		while( ( $res = stream_select( $readfd, $writefd, $errfd, 1 ) ) !== FALSE ) {
+		while( true ) {
+			$res = @stream_select( $readfd, $writefd, $errfd, 1 );
 			if( $res > 0 && ( $out = fgets( $pipes[1] ) ) ) {
 				if( $move = strstr( $out, 'bestmove' ) ) {
 					$result = substr( $move, 9, 4 );
@@ -1635,8 +1667,19 @@ try{
 		exit(0);
 	}
 	$action = $_REQUEST['action'];
+	if( isset( $_REQUEST['json'] ) ) {
+		$isJson = is_true( $_REQUEST['json'] );
+	}
+	else {
+		$isJson = false;
+	}
+	if( $isJson )
+		header('Content-type: application/json');
 
 	if( isset( $_REQUEST['board'] ) && !empty( $_REQUEST['board'] ) ) {
+		if( $isJson )
+			echo '{';
+
 		$row = ccbgetfen( $_REQUEST['board'] );
 		if( isset( $row ) && !empty( $row ) ) {
 			$banmoves = array();
@@ -1681,8 +1724,7 @@ try{
 							if( isset( $_REQUEST['nodes'] ) ) {
 								$nodes = intval($_REQUEST['nodes']);
 								$memcache_obj = new Memcache();
-								$memcache_obj->pconnect('localhost', 11211);
-								if( !$memcache_obj )
+								if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 									throw new Exception( 'Memcache error.' );
 								$thisminute = date('i');
 								$memcache_obj->add( 'Worker::' . $_SERVER['REMOTE_ADDR'] . 'NC_' . $thisminute, 0, 0, 150 );
@@ -1695,13 +1737,6 @@ try{
 								{
 									$score = -30000;
 								}
-							}
-							else if( abs( $score ) > 10000 )
-							{
-								if( $score < 0 && $score > -30000 )
-									$score = $score - 1;
-								else if( $score > 0 && $score < 30000 )
-									$score = $score + 1;
 							}
 							$redis = new Redis();
 							$redis->pconnect('192.168.1.2', 8889, 1.0);
@@ -1727,7 +1762,10 @@ try{
 							$redis->pconnect('192.168.1.2', 8889, 1.0);
 							if( !scoreExists( $redis, $row, $move ) || countAllScores( $redis, ccbmovemake( $row, $move ) ) == 0 ) {
 								updateQueue( $row, $move, $priority );
-								echo 'ok';
+								if( $isJson )
+									echo '"status":"ok"';
+								else
+									echo 'ok';
 							}
 						}
 					}
@@ -1772,6 +1810,8 @@ try{
 					if( $isvalid ) {
 						$allmoves = ccbmovegen( $nextfen );
 						if( count( $allmoves ) > 0 ) {
+							if( $isJson )
+								echo '"status":"ok","moves":[{';
 							$isfirst = true;
 							foreach( $allmoves as $key => $entry ) {
 								array_push( $movelist, $key );
@@ -1784,55 +1824,73 @@ try{
 								else if( $ruleresult == 3 ) {
 									$rulestr = 'ban';
 								}
-								if( !$isfirst )
-									echo '|move:' . $key . ',rule:' . $rulestr;
+								if( !$isfirst ) {
+									if( $isJson )
+										echo '},{"uci":"' . $key . '","rule":"' . $rulestr . '"';
+									else
+										echo '|move:' . $key . ',rule:' . $rulestr;
+								}
 								else {
-									echo 'move:' . $key . ',rule:' . $rulestr;
+									if( $isJson )
+										echo '"uci":"' . $key . '","rule":"' . $rulestr . '"';
+									else
+										echo 'move:' . $key . ',rule:' . $rulestr;
 									$isfirst = false;
 								}
 							}
+							if( $isJson )
+								echo '}]';
 						}
 						else {
-							if( ccbincheck( $nextfen ) )
-								echo 'checkmate';
-							else
-								echo 'stalemate';
+							if( ccbincheck( $nextfen ) ) {
+								if( $isJson )
+									echo '"status":"checkmate"';
+								else
+									echo 'checkmate';
+							}
+							else {
+								if( $isJson )
+									echo '"status":"stalemate"';
+								else
+									echo 'stalemate';
+							}
 						}
 					}
-					else
-						echo 'invalid movelist';
+					else {
+						if( $isJson )
+							echo '"status":"invalid movelist"';
+						else
+							echo 'invalid movelist';
+					}
 				}
 			}
 			else
 			{
 				$memcache_obj = new Memcache();
-				$memcache_obj->pconnect('localhost', 11211);
-				if( !$memcache_obj )
+				if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 					throw new Exception( 'Memcache error.' );
 				$querylimit = $memcache_obj->get( 'QLimit::' . $_SERVER['REMOTE_ADDR'] );
-				if( $querylimit === FALSE || $querylimit < 1000000 )
+				if( $querylimit === FALSE || $querylimit < 100 )
 				{
-					if( $action != 'querylearn' && $action != 'queue' ) {
-						$memcache_obj->add( 'QLimit::' . $_SERVER['REMOTE_ADDR'], 0, 0, 86400 );
-						$memcache_obj->increment( 'QLimit::' . $_SERVER['REMOTE_ADDR'] );
-					}
-					if( $dtmtb )
-						$egtbresult = $memcache_obj->get( 'EGTB_DTM::' . $row );
-					else
-						$egtbresult = $memcache_obj->get( 'EGTB_DTC::' . $row );
-					if( $egtbresult === FALSE && $action != 'queue' ) {
-//						$egtblock = new MyRWLock( "EGTBLock" );
-//						$egtblock->writelock();
-						$egtbresult = ccegtbprobe( $row, $dtmtb );
-//						$egtblock->writeunlock();
-						if( $egtbresult !== FALSE ) {
-							if( $dtmtb )
-								$memcache_obj->add( 'EGTB_DTM::' . $row, $egtbresult, 0, 30 );
-							else
-								$memcache_obj->add( 'EGTB_DTC::' . $row, $egtbresult, 0, 30 );
+					$memcache_obj->add( 'QLimit::' . $_SERVER['REMOTE_ADDR'], 0, 0, 1 );
+					$memcache_obj->increment( 'QLimit::' . $_SERVER['REMOTE_ADDR'] );
+					$egtbresult = NULL;
+					if( $action == 'queryall' || $action == 'query' || $action == 'querybest' || $action == 'querylearn' || $action == 'querysearch' || $action == 'queryscore' || $action == 'querypv' ) {
+						if( $dtmtb )
+							$egtbresult = $memcache_obj->get( 'EGTB_DTM::' . $row );
+						else
+							$egtbresult = $memcache_obj->get( 'EGTB_DTC::' . $row );
+						if( $egtbresult === FALSE ) {
+							$egtbresult = ccegtbprobe( $row, $dtmtb );
+							if( $egtbresult !== NULL ) {
+								if( $dtmtb )
+									$memcache_obj->add( 'EGTB_DTM::' . $row, $egtbresult, 0, 30 );
+								else
+									$memcache_obj->add( 'EGTB_DTC::' . $row, $egtbresult, 0, 30 );
+							}
 						}
 					}
-					if( $egtbresult !== FALSE ) {
+					if( $egtbresult !== NULL ) {
 						if( !$dtmtb ) {
 							$GLOBALS['order'] = array_pop( $egtbresult );
 						}
@@ -1855,45 +1913,92 @@ try{
 
 						if( $action == 'queryall' ) {
 							if( count( $moves ) > 0 ) {
+								if( $isJson )
+									echo '"status":"ok","moves":[{';
 								$bestmove = reset( $moves );
 								$isfirst = true;
 								if( $dtmtb ) {
 									foreach( array_keys( $moves ) as $record ) {
 										if( !$isfirst ) {
 											if( $moves[$record]['score'] > 0 ) {
-												if( $moves[$record]['score'] == $bestmove['score'] && $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] )
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
-												else
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												if( $moves[$record]['score'] == $bestmove['score'] && $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] ) {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												}
+												else {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":1,"note":"* (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												}
 											}
 											else if( $moves[$record]['score'] == 0 ) {
 												if( $bestmove['score'] == 0 ) {
-													if( $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] )
-														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
-													else
-														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+													if( $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] ) {
+														if( $isJson )
+															echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+														else
+															echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+													}
+													else {
+														if( $isJson )
+															echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":1,"note":"* (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+														else
+															echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+													}
 												}
-												else
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:0,note:? (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												else {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":0,"note":"? (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:0,note:? (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												}
 											}
 											else {
-												if( $moves[$record]['score'] == $bestmove['score'] && $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] )
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
-												else if( $bestmove['score'] < 0 )
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
-												else
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:0,note:? (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												if( $moves[$record]['score'] == $bestmove['score'] && $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] ) {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												}
+												else if( $bestmove['score'] < 0 ) {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":1,"note":"* (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												}
+												else {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":0,"note":"? (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:0,note:? (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												}
 											}
 										}
 										else {
 											$isfirst = false;
-											if( $bestmove['score'] == 0 && $moves[$record]['score'] == 0 )
-												echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
-											else
-												if( $moves[$record]['score'] > 0 )
-													echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+											if( $bestmove['score'] == 0 && $moves[$record]['score'] == 0 ) {
+												if( $isJson )
+													echo '"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
 												else
-													echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+													echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (D-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+											}
+											else {
+												if( $moves[$record]['score'] > 0 ) {
+													if( $isJson )
+														echo '"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (W-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												}
+												else {
+													if( $isJson )
+														echo '"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (L-M-' . str_pad( $moves[$record]['step'], 4, '0', STR_PAD_LEFT ) . ')';
+												}
+											}
 										}
 									}
 								}
@@ -1901,53 +2006,111 @@ try{
 									foreach( array_keys( $moves ) as $record ) {
 										if( !$isfirst ) {
 											if( $moves[$record]['score'] > 0 ) {
-												if( $moves[$record]['score'] == $bestmove['score'] && $moves[$record]['order'] == $bestmove['order'] && $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] )
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
-												else
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												if( $moves[$record]['score'] == $bestmove['score'] && $moves[$record]['order'] == $bestmove['order'] && $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] ) {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												}
+												else {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":1,"note":"* (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												}
 											}
 											else if( $moves[$record]['score'] == 0 ) {
 												if( $bestmove['score'] == 0 ) {
-													if( $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] )
-
-														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:* (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
-													else
-														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+													if( $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] ) {
+														if( $isJson )
+															echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+														else
+															echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+													}
+													else {
+														if( $isJson )
+															echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":1,"note":"* (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+														else
+															echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+													}
 												}
-												else
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:0,note:? (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												else {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":0,"note":"? (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:0,note:? (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												}
 											}
 											else {
-												if( $moves[$record]['score'] == $bestmove['score'] && $moves[$record]['order'] == $bestmove['order'] && $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] )
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
-												else if( $bestmove['score'] < 0 )
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
-												else
-													echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:0,note:? (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												if( $moves[$record]['score'] == $bestmove['score'] && $moves[$record]['order'] == $bestmove['order'] && $moves[$record]['cap'] == $bestmove['cap'] && $moves[$record]['check'] == $bestmove['check'] ) {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												}
+												else if( $bestmove['score'] < 0 ) {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":1,"note":"* (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:1,note:* (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												}
+												else {
+													if( $isJson )
+														echo '},{"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":0,"note":"? (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo '|move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:0,note:? (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												}
 											}
 										}
 										else {
 											$isfirst = false;
-											if( $bestmove['score'] == 0 && $moves[$record]['score'] == 0 )
-												echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:* (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
-											else
-												if( $moves[$record]['score'] > 0 )
-													echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+											if( $bestmove['score'] == 0 && $moves[$record]['score'] == 0 ) {
+												if( $isJson )
+													echo '"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
 												else
-													echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+													echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:* (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+											}
+											else {
+												if( $moves[$record]['score'] > 0 ) {
+													if( $isJson )
+														echo '"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (W-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												}
+												else {
+													if( $isJson )
+														echo '"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
+													else
+														echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (L-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+												}
+											}
 										}
 									}
 								}
+								if( $isJson )
+									echo '}]';
 							}
 							else {
 								$allmoves = ccbmovegen( $row );
-								if( count( $allmoves ) > 0 )
-									echo 'unknown';
-								else {
-									if( ccbincheck( $row ) )
-										echo 'checkmate';
+								if( count( $allmoves ) > 0 ) {
+									if( $isJson )
+										echo '"status":"unknown"';
 									else
-										echo 'stalemate';
+										echo 'unknown';
+								}
+								else {
+									if( ccbincheck( $row ) ) {
+										if( $isJson )
+											echo '"status":"checkmate"';
+										else
+											echo 'checkmate';
+									}
+									else {
+										if( $isJson )
+											echo '"status":"stalemate"';
+										else
+											echo 'stalemate';
+									}
 								}
 							}
 						}
@@ -1975,7 +2138,10 @@ try{
 										}
 									}
 									shuffle( $finals );
-									echo 'egtb:' . end( $finals );
+									if( $isJson )
+										echo '"status":"ok","egtb":"' . end( $finals ) . '"';
+									else
+										echo 'egtb:' . end( $finals );
 								}
 								else if( $bestmove['score'] == 0 )
 								{
@@ -1983,59 +2149,107 @@ try{
 									//	echo 'move:' . reset( array_keys( $moves ) );
 									//}
 									//else {
+										if( $isJson )
+											echo '"status":"ok","search_moves":[{';
 										$isfirst = true;
 										foreach( $moves as $key => $entry ) {
 											if( $entry['score'] == 0 ) {
 												if( !$isfirst ) {
-													echo '|search:' . $key;
+													if( $isJson )
+														echo '},{"uci":"' . $key . '"';
+													else
+														echo '|search:' . $key;
 												}
 												else {
 													$isfirst = false;
-													echo 'search:' . $key;
+													if( $isJson )
+														echo '"uci":"' . $key . '"';
+													else
+														echo 'search:' . $key;
 												}
 											}
 											else
 												break;
 										}
+										if( $isJson )
+											echo '}]';
 									//}
 								}
+								else {
+									if( $isJson )
+										echo '"status":"nobestmove"';
+									else
+										echo 'nobestmove';
+								}
+							}
+							else {
+								if( $isJson )
+									echo '"status":"nobestmove"';
 								else
 									echo 'nobestmove';
 							}
-							else
-								echo 'nobestmove';
 						}
 						else if( $action == 'querypv' ) {
 							if( count( $moves ) > 0 ) {
 								$bestmove = reset( $moves );
-								echo 'score:' . $bestmove['score'] . ',depth:' . $bestmove['step'] . ',pv:' . key( $moves );
+								if( $isJson )
+									echo '"status":"ok","score":' . $bestmove['score'] . ',"depth":' . $bestmove['step'] . ',"pv":["' . key( $moves ) . '"]';
+								else
+									echo 'score:' . $bestmove['score'] . ',depth:' . $bestmove['step'] . ',pv:' . key( $moves );
 							}
 							else {
 								$allmoves = ccbmovegen( $row );
-								if( count( $allmoves ) > 0 )
-									echo 'unknown';
-								else {
-									if( ccbincheck( $row ) )
-										echo 'checkmate';
+								if( count( $allmoves ) > 0 ) {
+									if( $isJson )
+										echo '"status":"unknown"';
 									else
-										echo 'stalemate';
+										echo 'unknown';
+								}
+								else {
+									if( ccbincheck( $row ) ) {
+										if( $isJson )
+											echo '"status":"checkmate"';
+										else
+											echo 'checkmate';
+									}
+									else {
+										if( $isJson )
+											echo '"status":"stalemate"';
+										else
+											echo 'stalemate';
+									}
 								}
 							}
 						}
 						else if( $action == 'queryscore' ) {
 							if( count( $moves ) > 0 ) {
 								$bestmove = reset( $moves );
-								echo 'eval:' . $bestmove['score'];
+								if( $isJson )
+									echo '"status":"ok","eval":' . $bestmove['score'];
+								else
+									echo 'eval:' . $bestmove['score'];
 							}
 							else {
 								$allmoves = ccbmovegen( $row );
-								if( count( $allmoves ) > 0 )
-									echo 'unknown';
-								else {
-									if( ccbincheck( $row ) )
-										echo 'checkmate';
+								if( count( $allmoves ) > 0 ) {
+									if( $isJson )
+										echo '"status":"unknown"';
 									else
-										echo 'stalemate';
+										echo 'unknown';
+								}
+								else {
+									if( ccbincheck( $row ) ) {
+										if( $isJson )
+											echo '"status":"checkmate"';
+										else
+											echo 'checkmate';
+									}
+									else {
+										if( $isJson )
+											echo '"status":"stalemate"';
+										else
+											echo 'stalemate';
+									}
 								}
 							}
 						}
@@ -2062,23 +2276,38 @@ try{
 												break;
 										}
 										shuffle( $finals );
-										echo 'move:' . end( $finals );
+										if( $isJson )
+											echo '"status":"ok","move":"' . end( $finals ) . '"';
+										else
+											echo 'move:' . end( $finals );
 									}
 									else {
-										echo 'nobestmove';
+										if( $isJson )
+											echo '"status":"nobestmove"';
+										else
+											echo 'nobestmove';
 									}
 								}
 								else {
 									if( end( $statmoves ) >= -50 ) {
-										echo 'move:' . end( array_keys( $statmoves ) );
+										if( $isJson )
+											echo '"status":"ok","move":"' . end( array_keys( $statmoves ) ) . '"';
+										else
+											echo 'move:' . end( array_keys( $statmoves ) );
 									}
 									else {
-										echo 'nobestmove';
+										if( $isJson )
+											echo '"status":"nobestmove"';
+										else
+											echo 'nobestmove';
 									}
 								}
 							}
 							else {
-								echo 'nobestmove';
+								if( $isJson )
+									echo '"status":"nobestmove"';
+								else
+									echo 'nobestmove';
 							}
 						}
 						else if( $action == 'query' ) {
@@ -2103,23 +2332,38 @@ try{
 												break;
 										}
 										shuffle( $finals );
-										echo 'move:' . end( $finals );
+										if( $isJson )
+											echo '"status":"ok","move":"' . end( $finals ) . '"';
+										else
+											echo 'move:' . end( $finals );
 									}
 									else {
-										echo 'nobestmove';
+										if( $isJson )
+											echo '"status":"nobestmove"';
+										else
+											echo 'nobestmove';
 									}
 								}
 								else {
 									if( end( $statmoves ) >= -50 ) {
-										echo 'move:' . end( array_keys( $statmoves ) );
+										if( $isJson )
+											echo '"status":"ok","move":"' . end( array_keys( $statmoves ) ) . '"';
+										else
+											echo 'move:' . end( array_keys( $statmoves ) );
 									}
 									else {
-										echo 'nobestmove';
+										if( $isJson )
+											echo '"status":"nobestmove"';
+										else
+											echo 'nobestmove';
 									}
 								}
 							}
 							else {
-								echo 'nobestmove';
+								if( $isJson )
+									echo '"status":"nobestmove"';
+								else
+									echo 'nobestmove';
 							}
 						}
 						else if( $action == 'queryall' ) {
@@ -2127,36 +2371,61 @@ try{
 							$redis->pconnect('192.168.1.2', 8889, 1.0);
 							list( $statmoves, $variations ) = getMoves( $redis, $row, $banmoves, true, true, $learn, 0 );
 							if( count( $statmoves ) > 0 ) {
+								if( $isJson )
+									echo '"status":"ok","moves":[{';
+
 								uksort( $statmoves, function ( $a, $b ) use ( $statmoves, $variations ) {
 									if( $statmoves[$a] != $statmoves[$b] ) {
 										return $statmoves[$b] - $statmoves[$a];
-									} else {
+									} else if( $variations[$a][1] != $variations[$b][1] ) {
 										return $variations[$a][1] - $variations[$b][1];
+									} else if( $variations[$a][0] != $variations[$b][0] ) {
+										return $variations[$b][0] - $variations[$a][0];
+									} else {
+										return $a - $b;
 									}
 								} );
 								$maxscore = reset( $statmoves );
 								$throttle = getthrottle( $maxscore );
 								$isfirst = true;
+
 								foreach( $statmoves as $record => $score ) {
 									$winrate = '';
-									if( abs( $score ) < 10000 )
-										$winrate = ',winrate:' . getWinRate( $score );
+									if( abs( $score ) < 10000 ) {
+										if( $isJson )
+											$winrate = ',"winrate":"' . getWinRate( $score ) . '"';
+										else
+											$winrate = ',winrate:' . getWinRate( $score );
+									}
 
-									if( !$isfirst && ( $learn || ( $score >= $throttle && $score >= getbestthrottle( $maxscore ) ) ) )
-										echo '|';
+									if( !$isfirst && ( $learn || ( $score >= $throttle && $score >= getbestthrottle( $maxscore ) ) ) ) {
+										if( $isJson )
+											echo '},{';
+										else
+											echo '|';
+									}
 									if( $score >= $throttle && $score >= getbestthrottle( $maxscore ) ) {
-										echo 'move:' . $record . ',score:' . $score . ',rank:2,note:! (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')' . $winrate;
+										if( $isJson )
+											echo '"uci":"' . $record . '","score":' . $score . ',"rank":2,"note":"! (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')"' . $winrate;
+										else
+											echo 'move:' . $record . ',score:' . $score . ',rank:2,note:! (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')' . $winrate;
 									}
 									else if( $score >= $throttle ) {
 										if( $isfirst || $learn ) {
-											echo 'move:' . $record . ',score:' . $score . ',rank:1,note:* (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')' . $winrate;
+											if( $isJson )
+												echo '"uci":"' . $record . '","score":' . $score . ',"rank":1,"note":"* (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')"' . $winrate;
+											else
+												echo 'move:' . $record . ',score:' . $score . ',rank:1,note:* (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')' . $winrate;
 										}
 										else
 											unset( $statmoves[$record] );
 									}
 									else {
 										if( $isfirst || $learn ) {
-											echo 'move:' . $record . ',score:' . $score . ',rank:0,note:? (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')' . $winrate;
+											if( $isJson )
+												echo '"uci":"' . $record . '","score":' . $score . ',"rank":0,"note":"? (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')"' . $winrate;
+											else
+												echo 'move:' . $record . ',score:' . $score . ',rank:0,note:? (' . str_pad( $variations[$record][0], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $variations[$record][1], 2, '0', STR_PAD_LEFT ) . ')' . $winrate;
 										}
 										else
 											unset( $statmoves[$record] );
@@ -2167,8 +2436,27 @@ try{
 									$allmoves = ccbmovegen( $row );
 									foreach( $allmoves as $record => $score ) {
 										if( !isset( $statmoves[$record] ) ) {
-											echo '|move:' . $record . ',score:??,rank:0,note:? (??-??)';
+											if( $isJson )
+												echo '},{"uci":"' . $record . '","score":"??","rank":0,"note":"? (??-??)"';
+											else
+												echo '|move:' . $record . ',score:??,rank:0,note:? (??-??)';
 										}
+									}
+								}
+								if( $isJson ) {
+									echo '}]';
+									if( isset( $variations['ply'] ) ) {
+										$ply = $variations['ply'];
+										$side = substr( $row, strpos( $row, ' ' ) + 1, 1 );
+										if( $side == 'w' ) {
+											if( $ply & 1 )
+												$ply++;
+										}
+										else {
+											if( ( $ply & 1 ) == 0 )
+												$ply++;
+										}
+										echo ',"ply":' . $ply;
 									}
 								}
 							}
@@ -2176,23 +2464,46 @@ try{
 								$allmoves = ccbmovegen( $row );
 								if( count( $allmoves ) > 0 ) {
 									if( $showall ) {
+										if( $isJson )
+											echo '"status":"ok","moves":[{';
 										$isfirst = true;
 										foreach( $allmoves as $record => $score ) {
-											if( !$isfirst )
-												echo '|';
+											if( !$isfirst ) {
+												if( $isJson )
+													echo '},{';
+												else
+													echo '|';
+											}
 											else
 												$isfirst = false;
-											echo 'move:' . $record . ',score:??,rank:0,note:? (??-??)';
+											if( $isJson )
+												echo '"uci":"' . $record . '","score":"??","rank":0,"note":"? (??-??)"';
+											else
+												echo 'move:' . $record . ',score:??,rank:0,note:? (??-??)';
 										}
+										if( $isJson )
+											echo '}]';
 									}
-									else
-										echo 'unknown';
+									else {
+										if( $isJson )
+											echo '"status":"unknown"';
+										else
+											echo 'unknown';
+									}
 								}
 								else {
-									if( ccbincheck( $row ) )
-										echo 'checkmate';
-									else
-										echo 'stalemate';
+									if( ccbincheck( $row ) ) {
+										if( $isJson )
+											echo '"status":"checkmate"';
+										else
+											echo 'checkmate';
+									}
+									else {
+										if( $isJson )
+											echo '"status":"stalemate"';
+										else
+											echo 'stalemate';
+									}
 								}
 							}
 						}
@@ -2217,23 +2528,38 @@ try{
 												break;
 										}
 										shuffle( $finals );
-										echo 'move:' . end( $finals );
+										if( $isJson )
+											echo '"status":"ok","move":"' . end( $finals ) . '"';
+										else
+											echo 'move:' . end( $finals );
 									}
 									else {
-										echo 'nobestmove';
+										if( $isJson )
+											echo '"status":"nobestmove"';
+										else
+											echo 'nobestmove';
 									}
 								}
 								else {
 									if( end( $statmoves ) >= -75 ) {
-										echo 'move:' . end( array_keys( $statmoves ) );
+										if( $isJson )
+											echo '"status":"ok","move":"' . end( array_keys( $statmoves ) ) . '"';
+										else
+											echo 'move:' . end( array_keys( $statmoves ) );
 									}
 									else {
-										echo 'nobestmove';
+										if( $isJson )
+											echo '"status":"nobestmove"';
+										else
+											echo 'nobestmove';
 									}
 								}
 							}
 							else {
-								echo 'nobestmove';
+								if( $isJson )
+									echo '"status":"nobestmove"';
+								else
+									echo 'nobestmove';
 							}
 						}
 						else if( $action == 'querysearch' ) {
@@ -2247,58 +2573,101 @@ try{
 									arsort( $statmoves );
 									$maxscore = reset( $statmoves );
 									if( $maxscore >= -50 ) {
+										if( $isJson )
+											echo '"status":"ok","search_moves":[{';
 										$throttle = getthrottle( $maxscore );
 										$isfirst = true;
 										foreach( $statmoves as $key => $entry ) {
 											if( $entry >= $throttle ) {
 												if( !$isfirst ) {
-													echo '|search:' . $key;
+													if( $isJson )
+														echo '},{"uci":"' . $key . '"';
+													else
+														echo '|search:' . $key;
 												}
 												else {
 													$isfirst = false;
-													echo 'search:' . $key;
+													if( $isJson )
+														echo '"uci":"' . $key . '"';
+													else
+														echo 'search:' . $key;
 												}
 											}
 											else
 												break;
 										}
+										if( $isJson )
+											echo '}]';
 									}
 									else {
-										echo 'nobestmove';
+										if( $isJson )
+											echo '"status":"nobestmove"';
+										else
+											echo 'nobestmove';
 									}
 								}
 								else {
 									if( end( $statmoves ) >= -50 ) {
-										echo 'move:' . end( array_keys( $statmoves ) );
+										if( $isJson )
+											echo '"status":"ok","move":"' . end( array_keys( $statmoves ) ) . '"';
+										else
+											echo 'move:' . end( array_keys( $statmoves ) );
 									}
 									else {
-										echo 'nobestmove';
+										if( $isJson )
+											echo '"status":"nobestmove"';
+										else
+											echo 'nobestmove';
 									}
 								}
 							}
 							else {
-								echo 'nobestmove';
+								if( $isJson )
+									echo '"status":"nobestmove"';
+								else
+									echo 'nobestmove';
 							}
 						}
 						else if( $action == 'querypv' ) {
 							$pv = array();
+							if( isset( $_REQUEST['stable'] ) ) {
+								$stable = is_true( $_REQUEST['stable'] );
+							}
+							else {
+								$stable = false;
+							}
 							$GLOBALS['counter'] = 0;
 							$GLOBALS['boardtt'] = new Judy( Judy::STRING_TO_INT );
 							$redis = new Redis();
 							$redis->pconnect('192.168.1.2', 8889, 1.0);
-							$statmoves = getAnalysisPath( $redis, $row, $banmoves, 0, 200, true, $learn, 0, $pv );
+							$statmoves = getAnalysisPath( $redis, $row, $banmoves, 0, 200, true, $learn, 0, $pv, $stable );
 							if( count( $statmoves ) > 0 ) {
-								echo 'score:' . $statmoves[$pv[0]] . ',depth:' . count( $pv ) . ',pv:' . implode( '|', $pv );
+								if( $isJson )
+									echo '"status":"ok","score":' . $statmoves[$pv[0]] . ',"depth":' . count( $pv ) . ',"pv":["' . implode( '","', $pv ) . '"]';
+								else
+									echo 'score:' . $statmoves[$pv[0]] . ',depth:' . count( $pv ) . ',pv:' . implode( '|', $pv );
 							}
 							else {
 								$allmoves = ccbmovegen( $row );
-								if( count( $allmoves ) > 0 )
-									echo 'unknown';
-								else {
-									if( ccbincheck( $row ) )
-										echo 'checkmate';
+								if( count( $allmoves ) > 0 ) {
+									if( $isJson )
+										echo '"status":"unknown"';
 									else
-										echo 'stalemate';
+										echo 'unknown';
+								}
+								else {
+									if( ccbincheck( $row ) ) {
+										if( $isJson )
+											echo '"status":"checkmate"';
+										else
+											echo 'checkmate';
+									}
+									else {
+										if( $isJson )
+											echo '"status":"stalemate"';
+										else
+											echo 'stalemate';
+									}
 								}
 							}
 						}
@@ -2309,17 +2678,47 @@ try{
 							if( count( $statmoves ) > 0 ) {
 								arsort( $statmoves );
 								$maxscore = reset( $statmoves );
-								echo 'eval:' . $maxscore;
+								if( $isJson ) {
+									if( isset( $variations['ply'] ) ) {
+										$ply = $variations['ply'];
+										$side = substr( $row, strpos( $row, ' ' ) + 1, 1 );
+										if( $side == 'w' ) {
+											if( $ply & 1 )
+												$ply++;
+										}
+										else {
+											if( ( $ply & 1 ) == 0 )
+												$ply++;
+										}
+										echo '"status":"ok","eval":' . $maxscore . ',"ply":' . $ply;
+									} else {
+										echo '"status":"ok","eval":' . $maxscore;
+									}
+								}
+								else
+									echo 'eval:' . $maxscore;
 							}
 							else {
 								$allmoves = ccbmovegen( $row );
-								if( count( $allmoves ) > 0 )
-									echo 'unknown';
-								else {
-									if( ccbincheck( $row ) )
-										echo 'checkmate';
+								if( count( $allmoves ) > 0 ) {
+									if( $isJson )
+										echo '"status":"unknown"';
 									else
-										echo 'stalemate';
+										echo 'unknown';
+								}
+								else {
+									if( ccbincheck( $row ) ) {
+										if( $isJson )
+											echo '"status":"checkmate"';
+										else
+											echo 'checkmate';
+									}
+									else {
+										if( $isJson )
+											echo '"status":"stalemate"';
+										else
+											echo 'stalemate';
+									}
 								}
 							}
 						}
@@ -2328,13 +2727,19 @@ try{
 							$GLOBALS['boardtt'] = new Judy( Judy::STRING_TO_INT );
 							$redis = new Redis();
 							$redis->pconnect('192.168.1.2', 8889, 1.0);
-							$statmoves = getMovesWithCheck( $redis, $row, array(), 0, 100, true, true, 0 );
+							$statmoves = getMovesWithCheck( $redis, $row, array(), 0, 200, true, true, 0 );
 							if( count( $statmoves ) >= 5 ) {
-								echo 'ok';
+								if( $isJson )
+									echo '"status":"ok"';
+								else
+									echo 'ok';
 							}
 							else if( count_pieces( $row ) >= 10 && count_attackers( $row ) >= 4 && count( ccbmovegen( $row ) ) > 0 ) {
 								updateSel( $row, true );
-								echo 'ok';
+								if( $isJson )
+									echo '"status":"ok"';
+								else
+									echo 'ok';
 							}
 						}
 						else if( $action == 'queryengine' ) {
@@ -2382,77 +2787,81 @@ try{
 				}
 				else {
 					//$memcache_obj->delete( 'QLimit::' . $_SERVER['REMOTE_ADDR'] );
-					echo 'rate limit exceeded';
+					if( $isJson )
+						echo '"status":"rate limit exceeded"';
+					else
+						echo 'rate limit exceeded';
 				}
 			}
 		}
 		else {
-			echo 'invalid board';
+			if( $isJson )
+				echo '"status":"invalid board"';
+			else
+				echo 'invalid board';
 		}
-		echo "\0";
+		if( $isJson )
+			echo '}';
+		else
+			echo "\0";
 	}
 	else if( $action == 'getqueue' ) {
 		if( isset( $_REQUEST['token'] ) && $_REQUEST['token'] == hash( 'md5', 'ChessDB' . $_SERVER['REMOTE_ADDR'] . $MASTER_PASSWORD ) ) {
-			if( $readwrite_queue->trywritelock() )
+			$memcache_obj = new Memcache();
+			if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
+				throw new Exception( 'Memcache error.' );
+			$activelist = $memcache_obj->get( 'WorkerList' );
+			if( $activelist === FALSE ) {
+				$activelist = array();
+				$memcache_obj->add( 'WorkerList', $activelist, 0, 0 );
+			}
+			if( !isset( $activelist[$_SERVER['REMOTE_ADDR']] ) ) {
+				$activelist[$_SERVER['REMOTE_ADDR']] = 1;
+				$memcache_obj->set( 'WorkerList', $activelist, 0, 0 );
+			}
+			$m = new MongoClient('mongodb:///tmp/mongodb-27017.sock');
+			$collection = $m->selectDB('ccdbackqueue')->selectCollection('ackqueuedb');
+			$doc = $collection->findAndModify( array( 'ts' => array( '$lt' => new MongoDate( time() - 3600 ) ) ), array( '$set' => array( 'ip' => $_SERVER['REMOTE_ADDR'], 'ts' => new MongoDate() ) ) );
+			if( !empty( $doc ) && isset( $doc['data'] ) ) {
+				echo $doc['data'];
+			}
+			else if( $readwrite_queue->trywritelock() )
 			{
-				//$readwrite_queue->writelock();
-				$memcache_obj = new Memcache();
-				$memcache_obj->pconnect('localhost', 11211);
-				if( !$memcache_obj )
-					throw new Exception( 'Memcache error.' );
-				$activelist = $memcache_obj->get( 'WorkerList' );
-				if( $activelist === FALSE ) {
-					$activelist = array();
-					$memcache_obj->add( 'WorkerList', $activelist, 0, 0 );
-				}
-				if( !isset( $activelist[$_SERVER['REMOTE_ADDR']] ) ) {
-					$activelist[$_SERVER['REMOTE_ADDR']] = 1;
-					$memcache_obj->set( 'WorkerList', $activelist, 0, 0 );
-				}
-				$m = new MongoClient('mongodb://localhost');
-				$collection = $m->selectDB('ccdbackqueue')->selectCollection('ackqueuedb');
-				$doc = $collection->findAndModify( array( 'ts' => array( '$lt' => new MongoDate( time() - 3600 ) ) ), array( '$set' => array( 'ip' => $_SERVER['REMOTE_ADDR'], 'ts' => new MongoDate() ) ) );
-				if( !empty( $doc ) && isset( $doc['data'] ) ) {
-					echo $doc['data'];
-				}
-				else {
-					$collection2 = $m->selectDB('ccdbqueue')->selectCollection('queuedb');
-					$cursor = $collection2->find()->sort( array( 'p' => -1, 'e' => 1 ) )->limit(10);
-					$docs = array();
-					$queueout = '';
-					foreach( $cursor as $doc ) {
-						$fen = ccbhexfen2fen(bin2hex($doc['_id']->bin));
-						if( count_pieces( $fen ) >= 10 && count_attackers( $fen ) >= 4 ) {
-							$moves = array();
-							foreach( $doc as $key => $item ) {
-								if( $key == '_id' )
-									continue;
-								else if( $key == 'p' )
-									continue;
-								else if( $key == 'e' )
-									continue;
-								else if( $memcache_obj->add( 'QueueHistory::' . $fen . $key, 1, 0, 300 ) )
-									$moves[] = $key;
-							}
-							if( count( $moves ) > 0 ) {
-								$queueout .= $fen . "\n";
-								foreach( $moves as $move )
-									$queueout .= $fen . ' moves ' . $move . "\n";
-								$thisminute = date('i');
-								$memcache_obj->add( 'QueueCount::' . $thisminute, 0, 0, 150 );
-								$memcache_obj->increment( 'QueueCount::' . $thisminute );
-							}
+				$collection2 = $m->selectDB('ccdbqueue')->selectCollection('queuedb');
+				$cursor = $collection2->find()->sort( array( 'p' => -1, 'e' => 1 ) )->limit(10);
+				$docs = array();
+				$queueout = '';
+				$thisminute = date('i');
+				foreach( $cursor as $doc ) {
+					$fen = ccbhexfen2fen(bin2hex($doc['_id']->bin));
+					if( count_pieces( $fen ) >= 10 && count_attackers( $fen ) >= 4 ) {
+						$moves = array();
+						foreach( $doc as $key => $item ) {
+							if( $key == '_id' )
+								continue;
+							else if( $key == 'p' )
+								continue;
+							else if( $key == 'e' )
+								continue;
+							else if( $memcache_obj->add( 'QueueHistory::' . $fen . $key, 1, 0, 300 ) )
+								$moves[] = $key;
 						}
-						$docs[] = $doc['_id'];
+						if( count( $moves ) > 0 ) {
+							$queueout .= $fen . "\n";
+							foreach( $moves as $move )
+								$queueout .= $fen . ' moves ' . $move . "\n";
+							$memcache_obj->add( 'QueueCount::' . $thisminute, 0, 0, 150 );
+							$memcache_obj->increment( 'QueueCount::' . $thisminute );
+						}
 					}
-					$cursor->reset();
-					if( count( $docs ) > 0 ) {
-						$collection2->remove( array( '_id' => array( '$in' => $docs ) ) );
-					}
-					if( strlen($queueout) > 0 ) {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin(hash( 'md5', $queueout ))) ), array( 'data' => $queueout, 'ip' => $_SERVER['REMOTE_ADDR'], 'ts' => new MongoDate() ), array( 'upsert' => true ) );
-						echo $queueout;
-					}
+					$docs[] = $doc['_id'];
+				}
+				if( count( $docs ) > 0 ) {
+					$collection2->remove( array( '_id' => array( '$in' => $docs ) ) );
+				}
+				if( strlen($queueout) > 0 ) {
+					$collection->update( array( '_id' => new MongoBinData(hex2bin(hash( 'md5', $queueout ))) ), array( 'data' => $queueout, 'ip' => $_SERVER['REMOTE_ADDR'], 'ts' => new MongoDate() ), array( 'upsert' => true ) );
+					echo $queueout;
 				}
 				$readwrite_queue->writeunlock();
 			}
@@ -2464,7 +2873,7 @@ try{
 	}
 	else if( $action == 'ackqueue' ) {
 		if( isset( $_REQUEST['key'] ) && isset( $_REQUEST['token'] ) && $_REQUEST['token'] == hash( 'md5', hash( 'md5', 'ChessDB' . $_SERVER['REMOTE_ADDR'] . $MASTER_PASSWORD ) . $_REQUEST['key'] ) ) {
-			$m = new MongoClient('mongodb://localhost');
+			$m = new MongoClient('mongodb:///tmp/mongodb-27017.sock');
 			$collection = $m->selectDB('ccdbackqueue')->selectCollection('ackqueuedb');
 			$collection->remove( array( '_id' => new MongoBinData(hex2bin($_REQUEST['key'])) ) );
 			echo 'ok';
@@ -2475,58 +2884,61 @@ try{
 	}
 	else if( $action == 'getsel' ) {
 		if( isset( $_REQUEST['token'] ) && $_REQUEST['token'] == hash( 'md5', 'ChessDB' . $_SERVER['REMOTE_ADDR'] . $MASTER_PASSWORD ) ) {
-			if( $readwrite_sel->trywritelock() )
+			$memcache_obj = new Memcache();
+			if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
+				throw new Exception( 'Memcache error.' );
+			$activelist = $memcache_obj->get( 'SelList' );
+			if( $activelist === FALSE ) {
+					$activelist = array();
+					$memcache_obj->add( 'SelList', $activelist, 0, 0 );
+			}
+			if( !isset( $activelist[$_SERVER['REMOTE_ADDR']] ) ) {
+					$activelist[$_SERVER['REMOTE_ADDR']] = 1;
+					$memcache_obj->set( 'SelList', $activelist, 0, 0 );
+			}
+			$m = new MongoClient('mongodb:///tmp/mongodb-27017.sock');
+			$collection = $m->selectDB('ccdbacksel')->selectCollection('ackseldb');
+			$doc = $collection->findAndModify( array( 'ts' => array( '$lt' => new MongoDate( time() - 3600 ) ) ), array( '$set' => array( 'ip' => $_SERVER['REMOTE_ADDR'], 'ts' => new MongoDate() ) ) );
+			if( !empty( $doc ) && isset( $doc['data'] ) ) {
+				echo $doc['data'];
+			}
+			else
 			{
-				//$readwrite_sel->writelock();
-				$m = new MongoClient('mongodb://localhost');
-				$collection = $m->selectDB('ccdbacksel')->selectCollection('ackseldb');
-				$doc = $collection->findAndModify( array( 'ts' => array( '$lt' => new MongoDate( time() - 3600 ) ) ), array( '$set' => array( 'ip' => $_SERVER['REMOTE_ADDR'], 'ts' => new MongoDate() ) ) );
-				if( !empty( $doc ) && isset( $doc['data'] ) ) {
-					echo $doc['data'];
-				}
-				else {
-					$memcache_obj = new Memcache();
-					$memcache_obj->pconnect('localhost', 11211);
-					if( !$memcache_obj )
-						throw new Exception( 'Memcache error.' );
-					$activelist = $memcache_obj->get( 'SelList' );
-					if( $activelist === FALSE ) {
-							$activelist = array();
-							$memcache_obj->add( 'SelList', $activelist, 0, 0 );
-					}
-					if( !isset( $activelist[$_SERVER['REMOTE_ADDR']] ) ) {
-							$activelist[$_SERVER['REMOTE_ADDR']] = 1;
-							$memcache_obj->set( 'SelList', $activelist, 0, 0 );
-					}
-
-					$collection2 = $m->selectDB('ccdbsel')->selectCollection('seldb');
-					$cursor = $collection2->find()->sort( array( 'p' => -1, 'e' => -1 ) )->limit(10);
-					$docs = array();
-					$selout = '';
-					foreach( $cursor as $doc ) {
-						$fen = ccbhexfen2fen(bin2hex($doc['_id']->bin));
-						if( count_pieces( $fen ) >= 10 && count_attackers( $fen ) >= 4 && $memcache_obj->add( 'SelHistory::' . $fen, 1, 0, 300 ) )
+				$collection2 = $m->selectDB('ccdbsel')->selectCollection('seldb');
+				$cursor = $collection2->find()->sort( array( 'p' => -1, 'e' => -1 ) )->limit(10);
+				$docs = array();
+				$selout = '';
+				$thisminute = date('i');
+				foreach( $cursor as $doc ) {
+					$fen = ccbhexfen2fen(bin2hex($doc['_id']->bin));
+					if( count_pieces( $fen ) >= 10 && count_attackers( $fen ) >= 4 )
+					{
+						if( isset( $doc['p'] ) && $doc['p'] > 0 )
 						{
-							if( isset( $doc['p'] ) && $doc['p'] > 0 )
+							if( $memcache_obj->add( 'SelHistory::!' . $fen, 1, 0, 300 ) )
+							{
+								$memcache_obj->add( 'SelHistory::' . $fen, 1, 0, 300 );
 								$selout .= '!' . $fen . "\n";
-							else
-								$selout .= $fen . "\n";
-							$thisminute = date('i');
-							$memcache_obj->add( 'SelCount::' . $thisminute, 0, 0, 150 );
-							$memcache_obj->increment( 'SelCount::' . $thisminute );
+							}
 						}
-						$docs[] = $doc['_id'];
+						else {
+							if( $memcache_obj->get( 'SelCount::' . $thisminute ) > $memcache_obj->get( 'QueueCount::' . $thisminute ) + 10 )
+								break;
+							if( $memcache_obj->add( 'SelHistory::' . $fen, 1, 0, 300 ) )
+								$selout .= $fen . "\n";
+						}
+						$memcache_obj->add( 'SelCount::' . $thisminute, 0, 0, 150 );
+						$memcache_obj->increment( 'SelCount::' . $thisminute );
 					}
-					$cursor->reset();
-					if( count( $docs ) > 0 ) {
-						$collection2->remove( array( '_id' => array( '$in' => $docs ) ) );
-					}
-					if( strlen($selout) > 0 ) {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin(hash( 'md5', $selout ))) ), array( 'data' => $selout, 'ip' => $_SERVER['REMOTE_ADDR'], 'ts' => new MongoDate() ), array( 'upsert' => true ) );
-						echo $selout;
-					}
+					$docs[] = $doc['_id'];
 				}
-				$readwrite_sel->writeunlock();
+				if( count( $docs ) > 0 ) {
+					$collection2->remove( array( '_id' => array( '$in' => $docs ) ) );
+				}
+				if( strlen($selout) > 0 ) {
+					$collection->update( array( '_id' => new MongoBinData(hex2bin(hash( 'md5', $selout ))) ), array( 'data' => $selout, 'ip' => $_SERVER['REMOTE_ADDR'], 'ts' => new MongoDate() ), array( 'upsert' => true ) );
+					echo $selout;
+				}
 			}
 		}
 		else {
@@ -2536,7 +2948,7 @@ try{
 	}
 	else if( $action == 'acksel' ) {
 		if( isset( $_REQUEST['key'] ) && isset( $_REQUEST['token'] ) && $_REQUEST['token'] == hash( 'md5', hash( 'md5', 'ChessDB' . $_SERVER['REMOTE_ADDR'] . $MASTER_PASSWORD ) . $_REQUEST['key'] ) ) {
-			$m = new MongoClient('mongodb://localhost');
+			$m = new MongoClient('mongodb:///tmp/mongodb-27017.sock');
 			$collection = $m->selectDB('ccdbacksel')->selectCollection('ackseldb');
 			$collection->remove( array( '_id' => new MongoBinData(hex2bin($_REQUEST['key'])) ) );
 			echo 'ok';
@@ -2552,21 +2964,24 @@ try{
 		echo $_SERVER['REMOTE_ADDR'];
 	}
 	else {
-		echo 'invalid parameters';
+		if( $isJson )
+			echo '{"status":"invalid parameters"}';
+		else
+			echo 'invalid parameters';
 	}
 }
 catch (MongoException $e) {
-	echo 'Error: ' . $e->getMessage();
 	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }
 catch (RedisException $e) {
-	echo 'Error: ' . $e->getMessage();
 	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }
 catch (Exception $e) {
-	echo 'Error: ' . $e->getMessage();
 	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }

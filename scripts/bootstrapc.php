@@ -351,16 +351,16 @@ function getMoves( $redis, $row, $depth ) {
 				asort( $moves1 );
 				$bestscore = end( $moves1 );
 				foreach( array_keys( array_intersect_key( $moves1, $loopdraws ) ) as $key ) {
-					if( $moves1[$key] == $bestscore && abs( $bestscore ) < 10000 ) {
+					if( $moves1[$key] == $bestscore ) {
 						$moves1[$key] = 0;
-						//if( !$isloop )
-						//	$updatemoves[$key] = 0;
 					}
 				}
 			}
 
-			unset( $GLOBALS['looptt'][$current_hash] );
-			unset( $GLOBALS['looptt'][$current_hash_bw] );
+			if( !$isloop ) {
+				unset( $GLOBALS['looptt'][$current_hash] );
+				unset( $GLOBALS['looptt'][$current_hash_bw] );
+			}
 		} else if( !$isloop ) {
 			$GLOBALS['counter']++;
 			$GLOBALS['boardtt'][$current_hash] = 1;

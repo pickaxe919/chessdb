@@ -171,14 +171,8 @@ function Start() {
 	var month = new Date().getMonth();
 	if (month >= 11 || month <= 1) {
 		Vtheme.href = "/file/style_candy.css";
-		var snow3d = document.createElement("script");
-		snow3d.src = "/file/snow3d.js";
-		Vtheme.parentElement.appendChild(snow3d);
 	} else if (month >= 5 && month <= 7) {
 		Vtheme.href = "/file/style_mint.css";
-		var snow3d = document.createElement("script");
-		snow3d.src = "/file/snow3d.js";
-		Vtheme.parentElement.appendChild(snow3d);
 	}
 
 	Vrulecheck.checked = Vrulecheck.defaultChecked;
@@ -530,6 +524,10 @@ function RequestQueue() {
 				else if(xmlhttpQueue.responseText.search(/invalid/) != -1) {
 					ClearInner();
 					Vout.innerHTML += '<span style="text-align:center; display:block;">当前局面无效！<\/span>';
+				}
+				else if(xmlhttpQueue.responseText.search(/exceeded/) != -1) {
+					ClearInner();
+					Vout.innerHTML += '<span style="text-align:center; display:block;">查询过于频繁！<\/span>';
 				}
 				else {
 					ClearInner();
@@ -947,6 +945,7 @@ function SetFen(s) {
 	s = s.replace(/ moves.*/g, '');
 	fens = s;
 	Initialize();
+	fens = chess.fen();
 	if (mvl.length > 0) {
 		for (var i = 0; i < mvl.length; i++) {
 			var mov = GetFigureMove2(mvl[i]);
@@ -1034,7 +1033,7 @@ function Initialize2() {
 	return;
 }
 
-function FillPV(id) {
+function FillPV(id, stable) {
 	if (busy)
 		return;
 	busy = 1;
@@ -1046,7 +1045,7 @@ function FillPV(id) {
 
 	var xmlhttpPV = getXmlHttp();
 
-	xmlhttpPV.open('GET', apiurl + '?action=querypv&board=' + b[2], true);
+	xmlhttpPV.open('GET', apiurl + '?action=querypv&board=' + b[2] + "&stable=" + stable, true);
 	xmlhttpPV.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
 	xmlhttpPV.onreadystatechange = function() {
 		if (xmlhttpPV.readyState == 4) {
@@ -1080,7 +1079,7 @@ function FillPV(id) {
 function mclick(e, id) {
 	e.preventDefault();
 	if (e.shiftKey) {
-		FillPV(id);
+		FillPV(id, true);
 	}
 	else {
 		ChangeFen(id);
@@ -1090,7 +1089,7 @@ function mclick(e, id) {
 
 function mcontext(e, id) {
 	e.preventDefault();
-	FillPV(id);
+	FillPV(id, e.shiftKey);
 	return false;
 }
 
@@ -1322,22 +1321,25 @@ function onmdown(cid) {
 		}
 		return;
 	} else if (f == 3) {
-		var s = place(cid).split(/\./);
-		var src = s[0].split(/,/);
-		var dst = s[1].split(/,/);
-		chess.put(chess.remove(FigureFiles[src[0]] + (8 - src[1])), FigureFiles[dst[0]] + (8 - dst[1]));
-		fens = chess.fen();
-		iif = 0;
-		Vfirsel.src = '/file/oo.gif';
-		Vsecsel.src = '/file/oo.gif';
-		Vselect.style.left = 0;
-		Vselect.style.top = 0;
-		Vselect.src = '/file/oo.gif';
-		while (prevmove.length)
-			prevmove.pop();
-		curstep = 0;
-		Vout2.innerHTML = '';
-		SyncDesk();
+		if (iif != 0)
+		{
+			var s = place(cid).split(/\./);
+			var src = s[0].split(/,/);
+			var dst = s[1].split(/,/);
+			chess.put(chess.remove(FigureFiles[src[0]] + (8 - src[1])), FigureFiles[dst[0]] + (8 - dst[1]));
+			fens = chess.fen();
+			iif = 0;
+			Vfirsel.src = '/file/oo.gif';
+			Vsecsel.src = '/file/oo.gif';
+			Vselect.style.left = 0;
+			Vselect.style.top = 0;
+			Vselect.src = '/file/oo.gif';
+			while (prevmove.length)
+				prevmove.pop();
+			curstep = 0;
+			Vout2.innerHTML = '';
+			SyncDesk();
+		}
 	} else if (f == 0 || f == 2) {
 		if (iif != 0 && iif != 'del') {
 			var dst = cid.split(/,/);

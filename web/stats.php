@@ -79,28 +79,29 @@ try{
 	if( isset( $_REQUEST['lang'] ) ) {
 		$lang = intval($_REQUEST['lang']);
 	}
+	if( isset( $_REQUEST['json'] ) ) {
+		$isJson = is_true( $_REQUEST['json'] );
+	}
+	else {
+		$isJson = false;
+	}
 	$redis = new Redis();
 	$redis->pconnect('192.168.1.2', 8889, 1.0);
 	$count1 = $redis->dbsize();
 
-	$m = new MongoClient();
+	$m = new MongoClient('mongodb:///tmp/mongodb-27017.sock');
 	$collection = $m->selectDB('ccdbqueue')->selectCollection('queuedb');
-	$cursor = $collection->find();
-	$count2 = $cursor->count();
-	$cursor->reset();
+	$count2 = $collection->count();
 
 	$collection = $m->selectDB('ccdbsel')->selectCollection('seldb');
-	$cursor = $collection->find();
-	$count3 = $cursor->count();
-	$cursor->reset();
+	$count3 = $collection->count();
 
 	$egtb_count_dtc = 0;
 	$egtb_size_dtc = 0;
 	$egtb_count_dtm = 0;
 	$egtb_size_dtm = 0;
 	$memcache_obj = new Memcache();
-	$memcache_obj->pconnect('localhost', 11211);
-	if( !$memcache_obj )
+	if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 		throw new Exception( 'Memcache error.' );
 	$egtbstats = $memcache_obj->get( 'EGTBStats' );
 	if( $egtbstats !== FALSE ) {
@@ -109,7 +110,7 @@ try{
 		$egtb_count_dtm = $egtbstats[2];
 		$egtb_size_dtm = $egtbstats[3];
 	} else {
-		$egtb_dirs_dtc = array( '/home/apache/EGTB_DTC/' );
+		$egtb_dirs_dtc = array( '/data/EGTB_DTC/' );
 		foreach( $egtb_dirs_dtc as $dir ) {
 			$dir_iter = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::SELF_FIRST );
 			foreach( $dir_iter as $file ) {
@@ -118,7 +119,7 @@ try{
 			}
 		}
 
-		$egtb_dirs_dtm = array( '/home/apache/EGTB_DTM/' );
+		$egtb_dirs_dtm = array( '/data/EGTB_DTM/' );
 		foreach( $egtb_dirs_dtm as $dir ) {
 			$dir_iter = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::SELF_FIRST );
 			foreach( $dir_iter as $file ) {
@@ -144,32 +145,40 @@ try{
 		$sel = $memcache_obj->get('SelCount::' . $lastminute);
 		$est = max( ( $count2 + $count3 ) / ( $queue + 1 ), $count3 / ( $sel + 1 ) );
 	}
-	echo '<table class="stats">';
-	if($lang == 0) {
-		echo '<tr><td>局面数量（近似）：</td><td style="text-align: right;">' . number_format( $count1 ) . '</td></tr>';
-		echo '<tr><td>学习队列（评估 / 筛选）：</td><td style="text-align: right;">' . number_format( $count2 ) . ' / ' . number_format( $count3 ) . '</td></tr>';
-		echo '<tr><td>后台计算（剩时 / 速度）：</td><td style="text-align: right;">' . secondsToTime( $est * 60 ) . ' @ ' . number_format( $nps, 3, '.', '' ) . ' GNPS</td></tr>';
-		echo '<tr><td>残局库数量（ DTC / DTM ）：</td><td style="text-align: right;">' . number_format( $egtb_count_dtc ) . ' / ' . number_format( $egtb_count_dtm ) . '</td></tr>';
-		echo '<tr><td>残局库体积（ DTC / DTM ）：</td><td style="text-align: right;">' . sizeFilter( $egtb_size_dtc ) . ' / ' . sizeFilter( $egtb_size_dtm ) . '</td></tr>';
+	if( $isJson ) {
+		header('Content-type: application/json');
+		echo '{"status":"ok","positions":' . $count1 . ',"queue":{"scoring":' . $count2 . ',"sieving":' . $count3 . '},"worker":{"backlog":' . (int)($est * 60) . ',"speed":' . (int)($nps * 1000) . '},"egtb":{"count":{"dtc":' . $egtb_count_dtc . ',"dtm":' . $egtb_count_dtm . '},"size":{"dtc":' . $egtb_count_dtc . ',"dtm":' . $egtb_size_dtm . '}}}';
 	} else {
-		echo '<tr><td>Position Count ( Approx. ) :</td><td style="text-align: right;">' . number_format( $count1 ) . '</td></tr>';
-		echo '<tr><td>Queue ( Scoring / Sieving ) :</td><td style="text-align: right;">' . number_format( $count2 ) . ' / ' . number_format( $count3 ) . '</td></tr>';
-		echo '<tr><td>Worker ( Backlog / Speed ) :</td><td style="text-align: right;">' . secondsToTime( $est * 60 ) . ' @ ' . number_format( $nps, 3, '.', '' ) . ' GNPS</td></tr>';
-		echo '<tr><td>EGTB Count ( DTC / DTM ) :</td><td style="text-align: right;">' . number_format( $egtb_count_dtc ) . ' / ' . number_format( $egtb_count_dtm ) . '</td></tr>';
-		echo '<tr><td>EGTB File Size ( DTC / DTM ) :</td><td style="text-align: right;">' . sizeFilter( $egtb_size_dtc ) . ' / ' . sizeFilter( $egtb_size_dtm ) . '</td></tr>';
+		echo '<table class="stats">';
+		if($lang == 0) {
+			echo '<tr><td>局面数量（近似）：</td><td style="text-align: right;">' . number_format( $count1 ) . '</td></tr>';
+			echo '<tr><td>学习队列（评估 / 筛选）：</td><td style="text-align: right;">' . number_format( $count2 ) . ' / ' . number_format( $count3 ) . '</td></tr>';
+			echo '<tr><td>后台计算（剩时 / 速度）：</td><td style="text-align: right;">' . secondsToTime( $est * 60 ) . ' @ ' . number_format( $nps, 3, '.', '' ) . ' GNPS</td></tr>';
+			echo '<tr><td>残局库数量（ DTC / DTM ）：</td><td style="text-align: right;">' . number_format( $egtb_count_dtc ) . ' / ' . number_format( $egtb_count_dtm ) . '</td></tr>';
+			echo '<tr><td>残局库体积（ DTC / DTM ）：</td><td style="text-align: right;">' . sizeFilter( $egtb_size_dtc ) . ' / ' . sizeFilter( $egtb_size_dtm ) . '</td></tr>';
+		} else {
+			echo '<tr><td>Position Count ( Approx. ) :</td><td style="text-align: right;">' . number_format( $count1 ) . '</td></tr>';
+			echo '<tr><td>Queue ( Scoring / Sieving ) :</td><td style="text-align: right;">' . number_format( $count2 ) . ' / ' . number_format( $count3 ) . '</td></tr>';
+			echo '<tr><td>Worker ( Backlog / Speed ) :</td><td style="text-align: right;">' . secondsToTime( $est * 60 ) . ' @ ' . number_format( $nps, 3, '.', '' ) . ' GNPS</td></tr>';
+			echo '<tr><td>EGTB Count ( DTC / DTM ) :</td><td style="text-align: right;">' . number_format( $egtb_count_dtc ) . ' / ' . number_format( $egtb_count_dtm ) . '</td></tr>';
+			echo '<tr><td>EGTB File Size ( DTC / DTM ) :</td><td style="text-align: right;">' . sizeFilter( $egtb_size_dtc ) . ' / ' . sizeFilter( $egtb_size_dtm ) . '</td></tr>';
+		}
+		echo '</table>';
 	}
-	echo '</table>';
 }
 catch (MongoException $e) {
-	echo 'Error: ' . $e->getMessage();
+	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }
 catch (RedisException $e) {
-	echo 'Error: ' . $e->getMessage();
+	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }
 catch (Exception $e) {
-	echo 'Error: ' . $e->getMessage();
+	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }
 

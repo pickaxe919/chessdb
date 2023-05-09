@@ -107,9 +107,15 @@ function getAllScores( $redis, $row ) {
 						if ( $item == -30001 ) {
 							$item = 0;
 						}
-						$finals[$key] = 1;
+						if( $key <= ccbgetLRmove( $key ) )
+							$finals[$key] = 1;
+						else
+							$finals[ccbgetLRmove( $key )] = 1;
 					}
-					$moves[$key] = -$item;
+					if( $key <= ccbgetLRmove( $key ) )
+						$moves[$key] = -$item;
+					else
+						$moves[ccbgetLRmove( $key )] = -$item;
 				}
 			}
 		}
@@ -122,9 +128,15 @@ function getAllScores( $redis, $row ) {
 						if ( $item == -30001 ) {
 							$item = 0;
 						}
-						$finals[ccbgetBWmove( $key )] = 1;
+						if( ccbgetBWmove( $key ) <= ccbgetLRBWmove( $key ) )
+							$finals[ccbgetBWmove( $key )] = 1;
+						else
+							$finals[ccbgetLRBWmove( $key )] = 1;
 					}
-					$moves[ccbgetBWmove( $key )] = -$item;
+					if( ccbgetBWmove( $key ) <= ccbgetLRBWmove( $key ) )
+						$moves[ccbgetBWmove( $key )] = -$item;
+					else
+						$moves[ccbgetLRBWmove( $key )] = -$item;
 				}
 			}
 		}
@@ -181,6 +193,13 @@ function updateScore( $redis, $row, $updatemoves ) {
 	else {
 		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
 		if( $minindex == 0 ) {
+			$newmoves = array();
+			foreach( $updatemoves as $key => $newscore ) {
+				if( $key <= ccbgetLRmove( $key ) )
+					$newmoves[$key] = $newscore;
+				else
+					$newmoves[ccbgetLRmove( $key )] = $newscore;
+			}
 			$redis->hMSet( hex2bin($minhexfen), $updatemoves );
 
 			foreach( $updatemoves as $key => $newscore ) {
@@ -193,11 +212,13 @@ function updateScore( $redis, $row, $updatemoves ) {
 		else if( $minindex == 1 ) {
 			$newmoves = array();
 			foreach( $updatemoves as $key => $newscore ) {
-				$newmoves[ccbgetBWmove( $key )] = $newscore;
+				if( ccbgetBWmove( $key ) <= ccbgetLRBWmove( $key ) )
+					$newmoves[ccbgetBWmove( $key )] = $newscore;
+				else
+					$newmoves[ccbgetLRBWmove( $key )] = $newscore;
 			}
 			$redis->hMSet( hex2bin($minhexfen), $newmoves );
-
-			foreach( array_keys( $updatemoves ) as $key ) {
+			foreach( $updatemoves as $key => $newscore ) {
 				if( ccbgetBWmove( $key ) < ccbgetLRBWmove( $key ) )
 				{
 					$redis->hDel( hex2bin($minhexfen), ccbgetLRBWmove( $key ) );
@@ -498,49 +519,38 @@ function getMoves( $redis, $row, $depth ) {
 				asort( $moves1 );
 				$bestscore = end( $moves1 );
 				foreach( array_keys( array_intersect_key( $moves1, $loopdraws ) ) as $key ) {
-					if( $moves1[$key] == $bestscore && abs( $bestscore ) < 10000 ) {
+					if( $moves1[$key] == $bestscore ) {
 						$moves1[$key] = 0;
-						//if( !$isloop )
-						//	$updatemoves[$key] = 0;
 					}
 				}
 			}
 			if( count( $loopmebans ) > 0 ) {
 				$moves2 = array_diff_key( $moves1, $loopmebans );
 				if( count( $moves2 ) > 0 ) {
-					asort( $moves2 );
-					$bestscore = end( $moves2 );
-					foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
-						$moves1[$key] = $bestscore;
-						if( !$isloop )
-							$updatemoves[$key] = -$bestscore;
+					if( $isloop ) {
+						asort( $moves2 );
+						$bestscore = end( $moves2 );
+						foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
+							$moves1[$key] = $bestscore;
+						}
 					}
 				}
 				else {
-					$allmoves = ccbmovegen( $row );
-					$moves3 = array_diff_key( $allmoves, $loopmebans );
-					if( count( $moves3 ) > 0 ) {
-						$GLOBALS['loopcheck'] = 3;
-					}
-					else {
-						foreach( array_keys( array_intersect_key( $moves1, $loopmebans ) ) as $key ) {
-							$moves1[$key] = -30000;
-							if( !$isloop )
-								$updatemoves[$key] = 30000;
-						}
-					}
+					$GLOBALS['loopcheck'] = 3;
 				}
 			}
 			if( count( $loopoppbans ) > 0 ) {
 				$GLOBALS['loopcheck'] = 2;
 			}
 
-			unset( $GLOBALS['looptt'][$current_hash] );
-			unset( $GLOBALS['looptt'][$current_hash_bw] );
-			if( $hasLRmirror )
-			{
-				unset( $GLOBALS['looptt'][$current_hash_lr] );
-				unset( $GLOBALS['looptt'][$current_hash_lrbw] );
+			if( !$isloop ) {
+				unset( $GLOBALS['looptt'][$current_hash] );
+				unset( $GLOBALS['looptt'][$current_hash_bw] );
+				if( $hasLRmirror )
+				{
+					unset( $GLOBALS['looptt'][$current_hash_lr] );
+					unset( $GLOBALS['looptt'][$current_hash_lrbw] );
+				}
 			}
 		} else if( !$isloop ) {
 			$GLOBALS['counter']++;

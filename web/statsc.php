@@ -92,24 +92,19 @@ try{
 	$redis->pconnect('192.168.1.2', 8888, 1.0);
 	$count1 = $redis->dbsize();
 
-	$m = new MongoClient();
+	$m = new MongoClient('mongodb:///tmp/mongodb-27017.sock');
 	$collection = $m->selectDB('cdbqueue')->selectCollection('queuedb');
-	$cursor = $collection->find();
-	$count2 = $cursor->count();
-	$cursor->reset();
+	$count2 = $collection->count();
 
 	$collection = $m->selectDB('cdbsel')->selectCollection('seldb');
-	$cursor = $collection->find();
-	$count3 = $cursor->count();
-	$cursor->reset();
+	$count3 = $collection->count();
 
 	$egtb_count_wdl = 0;
 	$egtb_size_wdl = 0;
 	$egtb_count_dtz = 0;
 	$egtb_size_dtz = 0;
 	$memcache_obj = new Memcache();
-	$memcache_obj->pconnect('localhost', 11211);
-	if( !$memcache_obj )
+	if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 		throw new Exception( 'Memcache error.' );
 	$egtbstats = $memcache_obj->get( 'EGTBStats2' );
 	if( $egtbstats !== FALSE ) {
@@ -118,7 +113,7 @@ try{
 		$egtb_count_dtz = $egtbstats[2];
 		$egtb_size_dtz = $egtbstats[3];
 	} else {
-		$egtb_dirs = array( '/home/syzygy/3-6men/', '/home/syzygy/7men/4v3_pawnful', '/home/syzygy/7men/4v3_pawnless', '/home/syzygy/7men/5v2_pawnful', '/home/syzygy/7men/5v2_pawnless', '/home/syzygy/7men/6v1_pawnful', '/home/syzygy/7men/6v1_pawnless' );
+		$egtb_dirs = array( '/data/syzygy/3-6men/', '/data/syzygy/7men/4v3_pawnful', '/data/syzygy/7men/4v3_pawnless', '/data/syzygy/7men/5v2_pawnful', '/data/syzygy/7men/5v2_pawnless', '/data/syzygy/7men/6v1_pawnful', '/data/syzygy/7men/6v1_pawnless' );
 		foreach( $egtb_dirs as $dir ) {
 			$dir_iter = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::SELF_FIRST );
 			foreach( $dir_iter as $filename => $file ) {
@@ -138,11 +133,6 @@ try{
 	}
 	$nps = 0;
 	$est = 0;
-	$memcache_obj = new Memcache();
-	$memcache_obj->pconnect('localhost', 11211);
-	if( !$memcache_obj )
-		throw new Exception( 'Memcache error.' );
-
 	$activelist = $memcache_obj->get('WorkerList2');
 	if($activelist !== FALSE) {
 		$lastminute = date('i', time() - 60);
@@ -179,15 +169,18 @@ try{
 	}
 }
 catch (MongoException $e) {
-	echo 'Error: ' . $e->getMessage();
+	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }
 catch (RedisException $e) {
-	echo 'Error: ' . $e->getMessage();
+	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }
 catch (Exception $e) {
-	echo 'Error: ' . $e->getMessage();
+	error_log( $e->getMessage(), 0 );
 	http_response_code(503);
+	echo 'Error: ' . $e->getMessage();
 }
 
