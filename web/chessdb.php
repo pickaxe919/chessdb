@@ -101,7 +101,7 @@ function count_attacker_pieces( $fen ) {
 }
 function getthrottle( $maxscore ) {
 	if( $maxscore >= 50 ) {
-		$throttle = $maxscore - 1;
+		$throttle = $maxscore;
 	}
 	else if( $maxscore >= -30 ) {
 		$throttle = (int)( $maxscore - 10 / ( 1 + exp( -abs( $maxscore ) / 10 ) ) );
@@ -113,7 +113,7 @@ function getthrottle( $maxscore ) {
 }
 function getbestthrottle( $maxscore ) {
 	if( $maxscore >= 50 ) {
-		$throttle = $maxscore - 1;
+		$throttle = $maxscore;
 	}
 	else if( $maxscore >= -30 ) {
 		$throttle = (int)( $maxscore - 5 / ( 1 + exp( -abs( $maxscore ) / 20 ) ) );
@@ -125,7 +125,7 @@ function getbestthrottle( $maxscore ) {
 }
 function getlearnthrottle( $maxscore ) {
 	if( $maxscore >= 50 ) {
-		$throttle = $maxscore - 1;
+		$throttle = $maxscore;
 	}
 	else if( $maxscore >= -30 ) {
 		$throttle = (int)( $maxscore - 40 / ( 1 + exp( -abs( $maxscore ) / 10 ) ) );
@@ -135,21 +135,16 @@ function getlearnthrottle( $maxscore ) {
 	}
 	return $throttle;
 }
-function getHexFenStorage( $hexfenarr ) {
+function getBinFenStorage( $hexfenarr ) {
 	asort( $hexfenarr );
 	$minhexfen = reset( $hexfenarr );
-	return array( $minhexfen, key( $hexfenarr ) );
+	return array( hex2bin( $minhexfen ), key( $hexfenarr ) );
 }
-function getAllScores( $redis, $row ) {
+function getAllScores( $redis, $minbinfen, $minindex, $hasLRmirror ) {
 	$moves = array();
 	$finals = array();
-	$LRfen = ccbgetLRfen( $row );
-	$BWfen = ccbgetBWfen( $row );
-	$hasLRmirror = ( $row == $LRfen ? false : true );
 	if( $hasLRmirror ) {
-		$LRBWfen = ccbgetLRfen( $BWfen );
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
-		$doc = $redis->hGetAll( hex2bin( $minhexfen ) );
+		$doc = $redis->hGetAll( $minbinfen );
 		if( $doc === FALSE )
 			throw new RedisException( 'Server operation error.' );
 		if( $minindex == 0 ) {
@@ -214,8 +209,7 @@ function getAllScores( $redis, $row ) {
 		}
 	}
 	else {
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
-		$doc = $redis->hGetAll( hex2bin( $minhexfen ) );
+		$doc = $redis->hGetAll( $minbinfen );
 		if( $doc === FALSE )
 			throw new RedisException( 'Server operation error.' );
 		if( $minindex == 0 ) {
@@ -269,65 +263,54 @@ function countAllScores( $redis, $row ) {
 	$hasLRmirror = ( $row == $LRfen ? false : true );
 	if( $hasLRmirror ) {
 		$LRBWfen = ccbgetLRfen( $BWfen );
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
-		return $redis->hLen( hex2bin( $minhexfen ) );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
+		return $redis->hLen( $minbinfen );
 	}
 	else {
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
-		return $redis->hLen( hex2bin( $minhexfen ) );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
+		return $redis->hLen( $minbinfen );
 	}
 }
-function scoreExists( $redis, $row, $move ) {
-	$LRfen = ccbgetLRfen( $row );
-	$BWfen = ccbgetBWfen( $row );
-	$hasLRmirror = ( $row == $LRfen ? false : true );
+function scoreExists( $redis, $minbinfen, $minindex, $hasLRmirror, $move ) {
 	if( $hasLRmirror ) {
-		$LRBWfen = ccbgetLRfen( $BWfen );
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
 		if( $minindex == 0 ) {
-			return $redis->hExists( hex2bin( $minhexfen ), $move );
+			return $redis->hExists( $minbinfen, $move );
 		}
 		else if( $minindex == 1 ) {
-			return $redis->hExists( hex2bin( $minhexfen ), ccbgetBWmove( $move ) );
+			return $redis->hExists( $minbinfen, ccbgetBWmove( $move ) );
 		}
 		else if( $minindex == 2 ) {
-			return $redis->hExists( hex2bin( $minhexfen ), ccbgetLRmove( $move ) );
+			return $redis->hExists( $minbinfen, ccbgetLRmove( $move ) );
 		}
 		else {
-			return $redis->hExists( hex2bin( $minhexfen ), ccbgetLRBWmove( $move ) );
+			return $redis->hExists( $minbinfen, ccbgetLRBWmove( $move ) );
 		}
 	}
 	else {
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
 		if( $minindex == 0 ) {
 			if( $move != ccbgetLRmove( $move ) )
 			{
-				return ( $redis->hExists( hex2bin( $minhexfen ), $move ) || $redis->hExists( hex2bin( $minhexfen ), ccbgetLRmove( $move ) ) );
+				return ( $redis->hExists( $minbinfen, $move ) || $redis->hExists( $minbinfen, ccbgetLRmove( $move ) ) );
 			}
 			else {
-				return $redis->hExists( hex2bin( $minhexfen ), $move );
+				return $redis->hExists( $minbinfen, $move );
 			}
 		}
 		else {
 			if( $move != ccbgetLRmove( $move ) )
 			{
-				return ( $redis->hExists( hex2bin( $minhexfen ), ccbgetBWmove( $move ) ) || $redis->hExists( hex2bin( $minhexfen ), ccbgetLRBWmove( $move ) ) );
+				return ( $redis->hExists( $minbinfen, ccbgetBWmove( $move ) ) || $redis->hExists( $minbinfen, ccbgetLRBWmove( $move ) ) );
 			}
 			else {
-				return $redis->hExists( hex2bin( $minhexfen ), ccbgetBWmove( $move ) );
+				return $redis->hExists( $minbinfen, ccbgetBWmove( $move ) );
 			}
 		}
 	}
 }
-function updateScore( $redis, $row, $updatemoves ) {
-	$LRfen = ccbgetLRfen( $row );
-	$BWfen = ccbgetBWfen( $row );
-	$hasLRmirror = ( $row == $LRfen ? false : true );
+function updateScore( $redis, $minbinfen, $minindex, $hasLRmirror, $updatemoves ) {
 	if( $hasLRmirror ) {
-		$LRBWfen = ccbgetLRfen( $BWfen );
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
 		if( $minindex == 0 ) {
-			if( $redis->hMSet( hex2bin($minhexfen), $updatemoves ) === FALSE )
+			if( $redis->hMSet( $minbinfen, $updatemoves ) === FALSE )
 				throw new RedisException( 'Server operation error.' );
 		}
 		else if( $minindex == 1 ) {
@@ -335,7 +318,7 @@ function updateScore( $redis, $row, $updatemoves ) {
 			foreach( $updatemoves as $key => $newscore ) {
 				$newmoves[ccbgetBWmove( $key )] = $newscore;
 			}
-			if( $redis->hMSet( hex2bin($minhexfen), $newmoves ) === FALSE )
+			if( $redis->hMSet( $minbinfen, $newmoves ) === FALSE )
 				throw new RedisException( 'Server operation error.' );
 		}
 		else if( $minindex == 2 ) {
@@ -343,7 +326,7 @@ function updateScore( $redis, $row, $updatemoves ) {
 			foreach( $updatemoves as $key => $newscore ) {
 				$newmoves[ccbgetLRmove( $key )] = $newscore;
 			}
-			if( $redis->hMSet( hex2bin($minhexfen), $newmoves ) === FALSE )
+			if( $redis->hMSet( $minbinfen, $newmoves ) === FALSE )
 				throw new RedisException( 'Server operation error.' );
 		}
 		else {
@@ -351,12 +334,11 @@ function updateScore( $redis, $row, $updatemoves ) {
 			foreach( $updatemoves as $key => $newscore ) {
 				$newmoves[ccbgetLRBWmove( $key )] = $newscore;
 			}
-			if( $redis->hMSet( hex2bin($minhexfen), $newmoves ) === FALSE )
+			if( $redis->hMSet( $minbinfen, $newmoves ) === FALSE )
 				throw new RedisException( 'Server operation error.' );
 		}
 	}
 	else {
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
 		if( $minindex == 0 ) {
 			$newmoves = array();
 			foreach( $updatemoves as $key => $newscore ) {
@@ -365,12 +347,12 @@ function updateScore( $redis, $row, $updatemoves ) {
 				else
 					$newmoves[ccbgetLRmove( $key )] = $newscore;
 			}
-			if( $redis->hMSet( hex2bin($minhexfen), $newmoves ) === FALSE )
+			if( $redis->hMSet( $minbinfen, $newmoves ) === FALSE )
 				throw new RedisException( 'Server operation error.' );
 			foreach( $updatemoves as $key => $newscore ) {
 				if( $key < ccbgetLRmove( $key ) )
 				{
-					if( $redis->hDel( hex2bin($minhexfen), ccbgetLRmove( $key ) ) === FALSE )
+					if( $redis->hDel( $minbinfen, ccbgetLRmove( $key ) ) === FALSE )
 						throw new RedisException( 'Server operation error.' );
 				}
 			}
@@ -383,12 +365,12 @@ function updateScore( $redis, $row, $updatemoves ) {
 				else
 					$newmoves[ccbgetLRBWmove( $key )] = $newscore;
 			}
-			if( $redis->hMSet( hex2bin($minhexfen), $newmoves ) === FALSE )
+			if( $redis->hMSet( $minbinfen, $newmoves ) === FALSE )
 				throw new RedisException( 'Server operation error.' );
 			foreach( $updatemoves as $key => $newscore ) {
 				if( ccbgetBWmove( $key ) < ccbgetLRBWmove( $key ) )
 				{
-					if( $redis->hDel( hex2bin($minhexfen), ccbgetLRBWmove( $key ) ) === FALSE )
+					if( $redis->hDel( $minbinfen, ccbgetLRBWmove( $key ) ) === FALSE )
 						throw new RedisException( 'Server operation error.' );
 				}
 			}
@@ -404,16 +386,16 @@ function updateQueue( $row, $key, $priority ) {
 	$hasLRmirror = ( $row == $LRfen ? false : true );
 	if( $hasLRmirror ) {
 		$LRBWfen = ccbgetLRfen( $BWfen );
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
 		if( $minindex == 0 ) {
 			$readwrite_queue->readlock();
 			do {
 				try {
 					$tryAgain = false;
 					if( $priority ) {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( 'p' => 1, $key => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+						$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$max' => array( 'p' => $priority ), '$set' => array( $key => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 					} else {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( $key => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+						$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$set' => array( $key => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 					}
 				}
 				catch( MongoDuplicateKeyException $e ) {
@@ -428,9 +410,9 @@ function updateQueue( $row, $key, $priority ) {
 				try {
 					$tryAgain = false;
 					if( $priority ) {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( 'p' => 1, ccbgetBWmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+						$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$max' => array( 'p' => $priority ), '$set' => array( ccbgetBWmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 					} else {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( ccbgetBWmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+						$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$set' => array( ccbgetBWmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 					}
 				}
 				catch( MongoDuplicateKeyException $e ) {
@@ -445,9 +427,9 @@ function updateQueue( $row, $key, $priority ) {
 				try {
 					$tryAgain = false;
 					if( $priority ) {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( 'p' => 1, ccbgetLRmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+						$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$max' => array( 'p' => $priority ), '$set' => array( ccbgetLRmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 					} else {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( ccbgetLRmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+						$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$set' => array( ccbgetLRmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 					}
 				}
 				catch( MongoDuplicateKeyException $e ) {
@@ -462,9 +444,9 @@ function updateQueue( $row, $key, $priority ) {
 				try {
 					$tryAgain = false;
 					if( $priority ) {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( 'p' => 1, ccbgetLRBWmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+						$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$max' => array( 'p' => $priority ), '$set' => array( ccbgetLRBWmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 					} else {
-						$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( ccbgetLRBWmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+						$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$set' => array( ccbgetLRBWmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 					}
 				}
 				catch( MongoDuplicateKeyException $e ) {
@@ -475,7 +457,7 @@ function updateQueue( $row, $key, $priority ) {
 		}
 	}
 	else {
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
 		if( $minindex == 0 ) {
 			if( $key != ccbgetLRmove( $key ) ) {
 				$readwrite_queue->readlock();
@@ -483,9 +465,9 @@ function updateQueue( $row, $key, $priority ) {
 					try {
 						$tryAgain = false;
 						if( $priority ) {
-							$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$unset' => array( ccbgetLRmove( $key ) => 0 ), '$set' => array( 'p' => 1, $key => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+							$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$unset' => array( ccbgetLRmove( $key ) => 0 ), '$max' => array( 'p' => $priority ), '$set' => array( $key => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 						} else {
-							$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$unset' => array( ccbgetLRmove( $key ) => 0 ), '$set' => array( $key => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+							$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$unset' => array( ccbgetLRmove( $key ) => 0 ), '$set' => array( $key => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 						}
 					}
 					catch( MongoDuplicateKeyException $e ) {
@@ -500,9 +482,9 @@ function updateQueue( $row, $key, $priority ) {
 					try {
 						$tryAgain = false;
 						if( $priority ) {
-							$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( 'p' => 1, $key => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+							$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$max' => array( 'p' => $priority ), '$set' => array( $key => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 						} else {
-							$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( $key => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+							$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$set' => array( $key => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 						}
 					}
 					catch( MongoDuplicateKeyException $e ) {
@@ -519,9 +501,9 @@ function updateQueue( $row, $key, $priority ) {
 					try {
 						$tryAgain = false;
 						if( $priority ) {
-							$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$unset' => array( ccbgetLRBWmove( $key ) => 0 ), '$set' => array( 'p' => 1, ccbgetBWmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+							$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$unset' => array( ccbgetLRBWmove( $key ) => 0 ), '$max' => array( 'p' => $priority ), '$set' => array( ccbgetBWmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 						} else {
-							$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$unset' => array( ccbgetLRBWmove( $key ) => 0 ), '$set' => array( ccbgetBWmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+							$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$unset' => array( ccbgetLRBWmove( $key ) => 0 ), '$set' => array( ccbgetBWmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 						}
 					}
 					catch( MongoDuplicateKeyException $e ) {
@@ -536,9 +518,9 @@ function updateQueue( $row, $key, $priority ) {
 					try {
 						$tryAgain = false;
 						if( $priority ) {
-							$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( 'p' => 1, ccbgetBWmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+							$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$max' => array( 'p' => $priority ), '$set' => array( ccbgetBWmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 						} else {
-							$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), array( '$set' => array( ccbgetBWmove( $key ) => 0, 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
+							$collection->update( array( '_id' => new MongoBinData($minbinfen) ), array( '$set' => array( ccbgetBWmove( $key ) => 0 ), '$setOnInsert' => array( 'e' => new MongoDate() ) ), array( 'upsert' => true ) );
 						}
 					}
 					catch( MongoDuplicateKeyException $e ) {
@@ -558,16 +540,16 @@ function updateSel( $row, $priority ) {
 	$hasLRmirror = ( $row == $LRfen ? false : true );
 	if( $hasLRmirror ) {
 		$LRBWfen = ccbgetLRfen( $BWfen );
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
 		if( $priority ) {
-			$doc = array( '$set' => array( 'p' => 1, 'e' => new MongoDate() ) );
+			$doc = array( '$max' => array( 'p' => $priority ), '$set' => array( 'e' => new MongoDate() ) );
 		} else {
 			$doc = array( 'e' => new MongoDate() );
 		}
 		do {
 			try {
 				$tryAgain = false;
-				$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), $doc, array( 'upsert' => true ) );
+				$collection->update( array( '_id' => new MongoBinData($minbinfen) ), $doc, array( 'upsert' => true ) );
 			}
 			catch( MongoDuplicateKeyException $e ) {
 				$tryAgain = true;
@@ -575,16 +557,16 @@ function updateSel( $row, $priority ) {
 		} while($tryAgain);
 	}
 	else {
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
 		if( $priority ) {
-			$doc = array( '$set' => array( 'p' => 1, 'e' => new MongoDate() ) );
+			$doc = array( '$max' => array( 'p' => $priority ), '$set' => array( 'e' => new MongoDate() ) );
 		} else {
 			$doc = array( 'e' => new MongoDate() );
 		}
 		do {
 			try {
 				$tryAgain = false;
-				$collection->update( array( '_id' => new MongoBinData(hex2bin($minhexfen)) ), $doc, array( 'upsert' => true ) );
+				$collection->update( array( '_id' => new MongoBinData($minbinfen) ), $doc, array( 'upsert' => true ) );
 			}
 			catch( MongoDuplicateKeyException $e ) {
 				$tryAgain = true;
@@ -592,19 +574,9 @@ function updateSel( $row, $priority ) {
 		} while($tryAgain);
 	}
 }
-function updatePly( $redis, $row, $ply ) {
-	$LRfen = ccbgetLRfen( $row );
-	$BWfen = ccbgetBWfen( $row );
-	$hasLRmirror = ( $row == $LRfen ? false : true );
-	if( $hasLRmirror ) {
-		$LRBWfen = ccbgetLRfen( $BWfen );
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
-		$redis->hSet( hex2bin($minhexfen), 'a0a0', $ply );
-	}
-	else {
-		list( $minhexfen, $minindex ) = getHexFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
-		$redis->hSet( hex2bin($minhexfen), 'a0a0', $ply );
-	}
+function updatePly( $redis, $minbinfen, $ply ) {
+	if( $redis->hSet( $minbinfen, 'a0a0', $ply ) === FALSE )
+		throw new RedisException( 'Server operation error.' );
 }
 function shuffle_assoc(&$array) {
 	$keys = array_keys($array);
@@ -617,15 +589,27 @@ function shuffle_assoc(&$array) {
 	return true;
 }
 function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
-	$hasLRmirror = ( $row == ccbgetLRfen( $row ) ? false : true );
-	list( $moves1, $finals ) = getAllScores( $redis, $row );
+	$LRfen = ccbgetLRfen( $row );
+	$BWfen = ccbgetBWfen( $row );
+	
+	$hasLRmirror = ( $row == $LRfen ? false : true );
+
+	if( $hasLRmirror ) {
+		$LRBWfen = ccbgetLRfen( $BWfen );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
+	}
+	else {
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
+	}
+
+	list( $moves1, $finals ) = getAllScores( $redis, $minbinfen, $minindex, $hasLRmirror );
 	$moves2 = array();
 
 	if( isset($moves1['ply']) )
 	{
 		if( $depth > 0 && ( $moves1['ply'] < 0 || $moves1['ply'] > $depth ) )
 		{
-			updatePly( $redis, $row, $depth );
+			updatePly( $redis, $minbinfen, $depth );
 			$depth++;
 		}
 		else
@@ -633,7 +617,7 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 	}
 	else if( count( $moves1 ) > 0 && $depth > 0 )
 	{
-		updatePly( $redis, $row, $depth );
+		updatePly( $redis, $minbinfen, $depth );
 		$depth++;
 	}
 	unset( $moves1['ply'] );
@@ -660,32 +644,22 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 				arsort( $nextmoves );
 				$nextscore = reset( $nextmoves );
 				$throttle = getthrottle( $nextscore );
-				$nextsum = 0;
+				$normalize = 0;
 				$nextcount = 0;
-				$totalvalue = 0;
+				$average = 0;
 				foreach( $nextmoves as $record => $score ) {
-					if( $score >= $throttle ) {
+					if( $score >= $throttle )
 						$nextcount++;
-						$nextsum = $nextsum + $score;
-						$totalvalue = $totalvalue + $nextsum;
+					if( abs( $nextscore ) < 10000 ) {
+						$weight = exp( ( $score - $nextscore ) / 10 );
+						$normalize += $weight;
+						$average += ( $score - $nextscore ) * $weight;
 					}
-					else
-						break;
 				}
 				$moves2[ $key ][0] = count( $nextmoves );
 				$moves2[ $key ][1] = $nextcount;
 				if( abs( $nextscore ) < 10000 ) {
-					if( $nextcount > 1 )
-						$nextscore = ( int )( ( $nextscore * 3 + $totalvalue / ( ( $nextcount + 1 ) * $nextcount / 2 ) * 2 ) / 5 );
-					else if( $nextcount == 1 ) {
-						if( count( $nextmoves ) > 1 ) {
-							if( $nextscore >= -50 )
-								$nextscore = ( int )( ( $nextscore * 2 + $throttle ) / 3 );
-						}
-						else if( abs( $nextscore ) > 20 && abs( $nextscore ) < 75 ) {
-							$nextscore = ( int )( $nextscore * 9 / 10 );
-						}
-					}
+					$nextscore = ( int )round( $nextscore + $average / $normalize );
 				}
 				if( $item != -$nextscore ) {
 					$moves1[ $key ] = -$nextscore;
@@ -699,11 +673,11 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 			}
 			else if( count_pieces( $nextfen ) >= 10 && count_attackers( $nextfen ) >= 4 )
 			{
-				updateQueue( $row, $key, true );
+				updateQueue( $row, $key, 2 );
 			}
 		}
 		if( count( $updatemoves ) > 0 )
-			updateScore( $redis, $row, $updatemoves );
+			updateScore( $redis, $minbinfen, $minindex, $hasLRmirror, $updatemoves );
 		$memcache_obj = new Memcache();
 		if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 			throw new Exception( 'Memcache error.' );
@@ -711,7 +685,7 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 			$allmoves = ccbmovegen( $row );
 			if( count( $allmoves ) > count( $knownmoves ) ) {
 				if( count( $knownmoves ) > 0 && count( $knownmoves ) < 5 ) {
-					updateSel( $row, true );
+					updateSel( $row, 1 );
 				}
 				$allmoves = array_diff_key( $allmoves, $knownmoves );
 				$findmoves = array();
@@ -725,7 +699,7 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 					$nextfen = ccbmovemake( $row, $key );
 					list( $nextmoves, $variations ) = getMoves( $redis, $nextfen, array(), false, false, false, $depth );
 					if( count( $nextmoves ) > 0 ) {
-						updateQueue( $row, $key, true );
+						updateQueue( $row, $key, 2 );
 					}
 					else if( $learn ) {
 						$learnArr['Learn::' . $nextfen] = array( $row, $key );
@@ -738,7 +712,7 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 		$autolearn = $memcache_obj->get( 'Learn::' . $row );
 		if( $autolearn !== FALSE ) {
 			$memcache_obj->delete( 'Learn::' . $row );
-			updateQueue( $autolearn[0], $autolearn[1], $learn );
+			updateQueue( $autolearn[0], $autolearn[1], $learn ? 2 : 0 );
 		}
 	}
 
@@ -769,18 +743,26 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 	return array( $moves1, $moves2 );
 }
 function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlimit, $learn, $depth ) {
-	list( $moves1, $finals ) = getAllScores( $redis, $row );
 	$LRfen = ccbgetLRfen( $row );
 	$BWfen = ccbgetBWfen( $row );
+	
 	$hasLRmirror = ( $row == $LRfen ? false : true );
-	if( $hasLRmirror )
+
+	if( $hasLRmirror ) {
 		$LRBWfen = ccbgetLRfen( $BWfen );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
+	}
+	else {
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
+	}
+
+	list( $moves1, $finals ) = getAllScores( $redis, $minbinfen, $minindex, $hasLRmirror );
 
 	if( isset($moves1['ply']) )
 	{
 		if( $depth > 0 && ( $moves1['ply'] < 0 || $moves1['ply'] > $depth ) )
 		{
-			updatePly( $redis, $row, $depth );
+			updatePly( $redis, $minbinfen, $depth );
 			$depth++;
 		}
 		else
@@ -788,7 +770,7 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 	}
 	else if( count( $moves1 ) > 0 && $depth > 0 )
 	{
-		updatePly( $redis, $row, $depth );
+		updatePly( $redis, $minbinfen, $depth );
 		$depth++;
 	}
 	unset( $moves1['ply'] );
@@ -916,30 +898,20 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 						arsort( $nextmoves );
 						$nextscore = reset( $nextmoves );
 						$throttle = getthrottle( $nextscore );
-						$nextsum = 0;
+						$normalize = 0;
 						$nextcount = 0;
-						$totalvalue = 0;
+						$average = 0;
 						foreach( $nextmoves as $record => $score ) {
-							if( $score >= $throttle ) {
+							if( $score >= $throttle )
 								$nextcount++;
-								$nextsum = $nextsum + $score;
-								$totalvalue = $totalvalue + $nextsum;
+							if( abs( $nextscore ) < 10000 ) {
+								$weight = exp( ( $score - $nextscore ) / 10 );
+								$normalize += $weight;
+								$average += ( $score - $nextscore ) * $weight;
 							}
-							else
-								break;
 						}
 						if( abs( $nextscore ) < 10000 ) {
-							if( $nextcount > 1 )
-								$nextscore = ( int )( ( $nextscore * 3 + $totalvalue / ( ( $nextcount + 1 ) * $nextcount / 2 ) * 2 ) / 5 );
-							else if( $nextcount == 1 ) {
-								if( count( $nextmoves ) > 1 ) {
-									if( $nextscore >= -50 )
-										$nextscore = ( int )( ( $nextscore * 2 + $throttle ) / 3 );
-								}
-								else if( abs( $nextscore ) > 20 && abs( $nextscore ) < 75 ) {
-									$nextscore = ( int )( $nextscore * 9 / 10 );
-								}
-							}
+							$nextscore = ( int )round( $nextscore + $average / $normalize );
 						}
 						if( $item != -$nextscore ) {
 							$moves1[ $key ] = -$nextscore;
@@ -954,9 +926,9 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 					else if( $ply == 0 || (count_pieces( $nextfen ) >= 10 && count_attackers( $nextfen ) >= 4) )
 					{
 						if( $ply == 0 )
-							updateQueue( $row, $key, true );
+							updateQueue( $row, $key, 2 );
 						else
-							updateSel( $nextfen, false );
+							updateSel( $nextfen, 0 );
 					}
 				}
 
@@ -964,7 +936,7 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 					$allmoves = ccbmovegen( $row );
 					if( count( $allmoves ) > count( $knownmoves ) ) {
 						if( count( $knownmoves ) > 0 && count( $knownmoves ) < 5 ) {
-							updateSel( $row, $ply == 0 ? true : false );
+							updateSel( $row, $ply == 0 ? 1 : 0 );
 						}
 						if( $ply == 0 ) {
 							$memcache_obj = new Memcache();
@@ -989,7 +961,7 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 							$autolearn = $memcache_obj->get( 'Learn::' . $row );
 							if( $autolearn !== FALSE ) {
 								$memcache_obj->delete( 'Learn::' . $row );
-								updateQueue( $autolearn[0], $autolearn[1], $learn );
+								updateQueue( $autolearn[0], $autolearn[1], $learn ? 2 : 0 );
 							}
 						}
 					}
@@ -1109,7 +1081,7 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 				$GLOBALS['boardtt'][$row] = 1;
 
 			if( count( $updatemoves ) > 0 )
-				updateScore( $redis, $row, $updatemoves );
+				updateScore( $redis, $minbinfen, $minindex, $hasLRmirror, $updatemoves );
 		}
 	}
 
@@ -1128,18 +1100,26 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 	return $moves1;
 }
 function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $learn, $depth, &$pv, $stable ) {
-	list( $moves1, $finals ) = getAllScores( $redis, $row );
 	$LRfen = ccbgetLRfen( $row );
 	$BWfen = ccbgetBWfen( $row );
+	
 	$hasLRmirror = ( $row == $LRfen ? false : true );
-	if( $hasLRmirror )
+
+	if( $hasLRmirror ) {
 		$LRBWfen = ccbgetLRfen( $BWfen );
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
+	}
+	else {
+		list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
+	}
+
+	list( $moves1, $finals ) = getAllScores( $redis, $minbinfen, $minindex, $hasLRmirror );
 
 	if( isset($moves1['ply']) )
 	{
 		if( $depth > 0 && ( $moves1['ply'] < 0 || $moves1['ply'] > $depth ) )
 		{
-			updatePly( $redis, $row, $depth );
+			updatePly( $redis, $minbinfen, $depth );
 			$depth++;
 		}
 		else
@@ -1147,7 +1127,7 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 	}
 	else if( count( $moves1 ) > 0 && $depth > 0 )
 	{
-		updatePly( $redis, $row, $depth );
+		updatePly( $redis, $minbinfen, $depth );
 		$depth++;
 	}
 	unset( $moves1['ply'] );
@@ -1219,7 +1199,7 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 			if( !$isloop )
 			{
 				asort( $moves1 );
-				$throttle = getthrottle( end( $moves1 ) );
+				$throttle = getbestthrottle( end( $moves1 ) );
 				$moves2 = array();
 				$knownmoves = array();
 				foreach( $moves1 as $key => $item ) {
@@ -1227,15 +1207,12 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 					if( !$hasLRmirror && $key != ccbgetLRmove( $key ) ) {
 						$knownmoves[ccbgetLRmove( $key )] = 0;
 					}
-					if( ( $ply == 0 && $item > -10000 ) || ( $item >= $throttle || $item == end( $moves1 ) ) ) {
+					if( $item >= $throttle ) {
 						$moves2[ $key ] = $item;
 					}
 				}
 				if( !$stable )
-				{
 					shuffle_assoc( $moves2 );
-					arsort( $moves2 );
-				}
 				else
 				{
 					$moves3 = array();
@@ -1250,15 +1227,10 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 							arsort( $nextmoves );
 							$nextscore = reset( $nextmoves );
 							$throttle = getthrottle( $nextscore );
-							$nextsum = 0;
 							$nextcount = 0;
-							$totalvalue = 0;
 							foreach( $nextmoves as $record => $score ) {
-								if( $score >= $throttle ) {
+								if( $score >= $throttle )
 									$nextcount++;
-									$nextsum = $nextsum + $score;
-									$totalvalue = $totalvalue + $nextsum;
-								}
 								else
 									break;
 							}
@@ -1301,30 +1273,20 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 						arsort( $nextmoves );
 						$nextscore = reset( $nextmoves );
 						$throttle = getthrottle( $nextscore );
-						$nextsum = 0;
+						$normalize = 0;
 						$nextcount = 0;
-						$totalvalue = 0;
+						$average = 0;
 						foreach( $nextmoves as $record => $score ) {
-							if( $score >= $throttle ) {
+							if( $score >= $throttle )
 								$nextcount++;
-								$nextsum = $nextsum + $score;
-								$totalvalue = $totalvalue + $nextsum;
+							if( abs( $nextscore ) < 10000 ) {
+								$weight = exp( ( $score - $nextscore ) / 10 );
+								$normalize += $weight;
+								$average += ( $score - $nextscore ) * $weight;
 							}
-							else
-								break;
 						}
 						if( abs( $nextscore ) < 10000 ) {
-							if( $nextcount > 1 )
-								$nextscore = ( int )( ( $nextscore * 3 + $totalvalue / ( ( $nextcount + 1 ) * $nextcount / 2 ) * 2 ) / 5 );
-							else if( $nextcount == 1 ) {
-								if( count( $nextmoves ) > 1 ) {
-									if( $nextscore >= -50 )
-										$nextscore = ( int )( ( $nextscore * 2 + $throttle ) / 3 );
-								}
-								else if( abs( $nextscore ) > 20 && abs( $nextscore ) < 75 ) {
-									$nextscore = ( int )( $nextscore * 9 / 10 );
-								}
-							}
+							$nextscore = ( int )round( $nextscore + $average / $normalize );
 						}
 						if( $item != -$nextscore ) {
 							$moves1[ $key ] = -$nextscore;
@@ -1339,9 +1301,9 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 					else if( $ply == 0 || (count_pieces( $nextfen ) >= 10 && count_attackers( $nextfen ) >= 4) )
 					{
 						if( $ply == 0 )
-							updateQueue( $row, $key, true );
+							updateQueue( $row, $key, 2 );
 						else
-							updateSel( $nextfen, false );
+							updateSel( $nextfen, 0 );
 					}
 				}
 
@@ -1349,7 +1311,7 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 					$allmoves = ccbmovegen( $row );
 					if( count( $allmoves ) > count( $knownmoves ) ) {
 						if( count( $knownmoves ) > 0 && count( $knownmoves ) < 5 ) {
-							updateSel( $row, $ply == 0 ? true : false );
+							updateSel( $row, $ply == 0 ? 1 : 0 );
 						}
 						if( $ply == 0 ) {
 							$memcache_obj = new Memcache();
@@ -1374,7 +1336,7 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 							$autolearn = $memcache_obj->get( 'Learn::' . $row );
 							if( $autolearn !== FALSE ) {
 								$memcache_obj->delete( 'Learn::' . $row );
-								updateQueue( $autolearn[0], $autolearn[1], $learn );
+								updateQueue( $autolearn[0], $autolearn[1], $learn ? 2 : 0 );
 							}
 						}
 					}
@@ -1478,7 +1440,7 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 				$GLOBALS['boardtt'][$row] = 1;
 
 			if( count( $updatemoves ) > 0 )
-				updateScore( $redis, $row, $updatemoves );
+				updateScore( $redis, $minbinfen, $minindex, $hasLRmirror, $updatemoves );
 		}
 	}
 
@@ -1717,6 +1679,19 @@ try{
 
 			if( $action == 'store' ) {
 				if( isset( $_REQUEST['move'] ) && !empty( $_REQUEST['move'] ) && count_pieces( $row ) >= 10 && count_attackers( $row ) >= 4 ) {
+					$LRfen = ccbgetLRfen( $row );
+					$BWfen = ccbgetBWfen( $row );
+					
+					$hasLRmirror = ( $row == $LRfen ? false : true );
+
+					if( $hasLRmirror ) {
+						$LRBWfen = ccbgetLRfen( $BWfen );
+						list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen), ccbfen2hexfen($LRfen), ccbfen2hexfen($LRBWfen) ) );
+					}
+					else {
+						list( $minbinfen, $minindex ) = getBinFenStorage( array( ccbfen2hexfen($row), ccbfen2hexfen($BWfen) ) );
+					}
+
 					$moves = ccbmovegen( $row );
 					$move = $_REQUEST['move'];
 					if( isset( $moves[$move] ) && isset( $_REQUEST['score'] ) ) {
@@ -1740,8 +1715,8 @@ try{
 							}
 							$redis = new Redis();
 							$redis->pconnect('192.168.1.2', 8889, 1.0);
-							if( !scoreExists( $redis, $row, $move ) || countAllScores( $redis, ccbmovemake( $row, $move ) ) == 0 ) {
-								updateScore( $redis, $row, array( $move => $score ) );
+							if( !scoreExists( $redis, $minbinfen, $minindex, $hasLRmirror, $move ) || countAllScores( $redis, ccbmovemake( $row, $move ) ) == 0 ) {
+								updateScore( $redis, $minbinfen, $minindex, $hasLRmirror, array( $move => $score ) );
 								echo 'ok';
 							}
 						}
@@ -1754,13 +1729,13 @@ try{
 					{
 						$move = substr( $move, 5 );
 						if( isset( $moves[$move] ) ) {
-							$priority = false;
+							$priority = 0;
 							if( isset( $_REQUEST['token'] ) && !empty( $_REQUEST['token'] ) && $_REQUEST['token'] == hash( 'md5', hash( 'md5', 'ChessDB' . $_SERVER['REMOTE_ADDR'] . $MASTER_PASSWORD ) . $move ) ) {
-								$priority = true;
+								$priority = 1;
 							}
 							$redis = new Redis();
 							$redis->pconnect('192.168.1.2', 8889, 1.0);
-							if( !scoreExists( $redis, $row, $move ) || countAllScores( $redis, ccbmovemake( $row, $move ) ) == 0 ) {
+							if( !scoreExists( $redis, $minbinfen, $minindex, $hasLRmirror, $move ) || countAllScores( $redis, ccbmovemake( $row, $move ) ) == 0 ) {
 								updateQueue( $row, $move, $priority );
 								if( $isJson )
 									echo '"status":"ok"';
@@ -1870,7 +1845,7 @@ try{
 				if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 					throw new Exception( 'Memcache error.' );
 				$querylimit = $memcache_obj->get( 'QLimit::' . $_SERVER['REMOTE_ADDR'] );
-				if( $querylimit === FALSE || $querylimit < 100 )
+				if( $querylimit === FALSE || $querylimit < 1000 )
 				{
 					$memcache_obj->add( 'QLimit::' . $_SERVER['REMOTE_ADDR'], 0, 0, 1 );
 					$memcache_obj->increment( 'QLimit::' . $_SERVER['REMOTE_ADDR'] );
@@ -2068,7 +2043,7 @@ try{
 												if( $isJson )
 													echo '"uci":"' . $record . '","score":' . $moves[$record]['score'] . ',"rank":2,"note":"! (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')"';
 												else
-													echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:* (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
+													echo 'move:' . $record . ',score:' . $moves[$record]['score'] . ',rank:2,note:! (D-' . str_pad( $moves[$record]['order'], 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $moves[$record]['step'], 3, '0', STR_PAD_LEFT ) . ')';
 											}
 											else {
 												if( $moves[$record]['score'] > 0 ) {
@@ -2269,9 +2244,8 @@ try{
 									$maxscore = reset( $statmoves );
 									if( $maxscore >= -50 ) {
 										foreach( $statmoves as $key => $entry ) {
-											if( $entry >= getbestthrottle( $maxscore ) ) {
+											if( $entry >= getbestthrottle( $maxscore ) )
 												$finals[$finalcount++] = $key;
-											}
 											else
 												break;
 										}
@@ -2325,9 +2299,8 @@ try{
 									if( $maxscore >= -50 ) {
 										$throttle = getthrottle( $maxscore );
 										foreach( $statmoves as $key => $entry ) {
-											if( $entry >= $throttle ) {
+											if( $entry >= $throttle )
 												$finals[$finalcount++] = $key;
-											}
 											else
 												break;
 										}
@@ -2735,7 +2708,10 @@ try{
 									echo 'ok';
 							}
 							else if( count_pieces( $row ) >= 10 && count_attackers( $row ) >= 4 && count( ccbmovegen( $row ) ) > 0 ) {
-								updateSel( $row, true );
+								if( isset( $_REQUEST['token'] ) && !empty( $_REQUEST['token'] ) && substr( hash( 'md5', $_REQUEST['board'] . $_REQUEST['token'] ), 0, 2 ) == '00' )
+									updateSel( $row, 2 );
+								else
+									updateSel( $row, 0 );
 								if( $isJson )
 									echo '"status":"ok"';
 								else
@@ -2743,7 +2719,7 @@ try{
 							}
 						}
 						else if( $action == 'queryengine' ) {
-							if( isset( $_REQUEST['token'] ) && !empty( $_REQUEST['token'] ) && substr( md5( $_REQUEST['board'] . $_REQUEST['token'] ), 0, 2 ) == '00' ) {
+							if( isset( $_REQUEST['token'] ) && !empty( $_REQUEST['token'] ) && substr( hash( 'md5', $_REQUEST['board'] . $_REQUEST['token'] ), 0, 2 ) == '00' ) {
 								$movelist = array();
 								$isvalid = true;
 								if( isset( $_REQUEST['movelist'] ) && !empty( $_REQUEST['movelist'] ) ) {
@@ -2765,10 +2741,15 @@ try{
 										$isvalid = false;
 								}
 								if( $isvalid ) {
-									$memcache_obj->add( 'EngineCount', 0 );
-									$engcount = $memcache_obj->increment( 'EngineCount' );
-									$result = getEngineMove( $row, $movelist, 5 - min( 4, $engcount / 2 ) );
-									$memcache_obj->decrement( 'EngineCount' );
+									$cachekey = 'Engine::' . hash( 'md5', $row . implode( $movelist ) );
+									$result = $memcache_obj->get( $cachekey );
+									if( $result === FALSE ) {
+										$memcache_obj->add( 'EngineCount', 0 );
+										$engcount = $memcache_obj->increment( 'EngineCount' );
+										$result = getEngineMove( $row, $movelist, 5 - min( 4, $engcount / 2 ) );
+										$memcache_obj->decrement( 'EngineCount' );
+										$memcache_obj->add( $cachekey, $result, 0, 30 );
+									}
 									if( !empty( $result ) ) {
 										echo 'move:' . $result;
 									}
