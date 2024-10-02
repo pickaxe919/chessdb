@@ -147,6 +147,7 @@ try{
 		$sel = $memcache_obj->get('SelCount2::' . $lastminute);
 		$est = max( ( $count2 + $count3 ) / ( $queue + 1 ), $count3 / ( $sel + 1 ) );
 	}
+	$memcache_obj->set('RateLimit2', max( 5, (int)(1000 - $count2 * 20 / ( $queue + 1 ) - $count3 / ( $sel + 1 )) ) );
 	if( $isJson ) {
 		header('Content-type: application/json');
 		echo '{"status":"ok","positions":' . $count1 . ',"queue":{"scoring":' . $count2 . ',"sieving":' . $count3 . '},"worker":{"backlog":' . (int)($est * 60) . ',"speed":' . (int)($nps * 1000) . '},"egtb":{"count":{"wdl":' . $egtb_count_wdl . ',"dtz":' . $egtb_count_dtz . '},"size":{"wdl":' . $egtb_size_wdl . ',"dtz":' . $egtb_size_dtz . '}}}';

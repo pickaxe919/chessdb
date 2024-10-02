@@ -644,22 +644,32 @@ function getMoves( $redis, $row, $banmoves, $update, $mirror, $learn, $depth ) {
 				arsort( $nextmoves );
 				$nextscore = reset( $nextmoves );
 				$throttle = getthrottle( $nextscore );
-				$normalize = 0;
+				$nextsum = 0;
 				$nextcount = 0;
-				$average = 0;
+				$totalvalue = 0;
 				foreach( $nextmoves as $record => $score ) {
-					if( $score >= $throttle )
+					if( $score >= $throttle ) {
 						$nextcount++;
-					if( abs( $nextscore ) < 10000 ) {
-						$weight = exp( ( $score - $nextscore ) / 10 );
-						$normalize += $weight;
-						$average += ( $score - $nextscore ) * $weight;
+						$nextsum = $nextsum + $score;
+						$totalvalue = $totalvalue + $nextsum;
 					}
+					else
+						break;
 				}
 				$moves2[ $key ][0] = count( $nextmoves );
 				$moves2[ $key ][1] = $nextcount;
 				if( abs( $nextscore ) < 10000 ) {
-					$nextscore = ( int )round( $nextscore + $average / $normalize );
+					if( $nextcount > 1 )
+						$nextscore = ( int )round( ( $nextscore * 3 + $totalvalue / ( ( $nextcount + 1 ) * $nextcount / 2 ) * 2 ) / 5 );
+					else {
+						if( count( $nextmoves ) > 1 ) {
+							if( $nextscore > 0 && $nextscore < 50 )
+								$nextscore = ( int )round( ( $nextscore * 4 + $throttle ) / 5 );
+						}
+						else if( abs( $nextscore ) > 20 && abs( $nextscore ) < 75 ) {
+							$nextscore = ( int )round( $nextscore * 9 / 10 );
+						}
+					}
 				}
 				if( $item != -$nextscore ) {
 					$moves1[ $key ] = -$nextscore;
@@ -898,20 +908,30 @@ function getMovesWithCheck( $redis, $row, $banmoves, $ply, $enumlimit, $resetlim
 						arsort( $nextmoves );
 						$nextscore = reset( $nextmoves );
 						$throttle = getthrottle( $nextscore );
-						$normalize = 0;
+						$nextsum = 0;
 						$nextcount = 0;
-						$average = 0;
+						$totalvalue = 0;
 						foreach( $nextmoves as $record => $score ) {
-							if( $score >= $throttle )
+							if( $score >= $throttle ) {
 								$nextcount++;
-							if( abs( $nextscore ) < 10000 ) {
-								$weight = exp( ( $score - $nextscore ) / 10 );
-								$normalize += $weight;
-								$average += ( $score - $nextscore ) * $weight;
+								$nextsum = $nextsum + $score;
+								$totalvalue = $totalvalue + $nextsum;
 							}
+							else
+								break;
 						}
 						if( abs( $nextscore ) < 10000 ) {
-							$nextscore = ( int )round( $nextscore + $average / $normalize );
+							if( $nextcount > 1 )
+								$nextscore = ( int )round( ( $nextscore * 3 + $totalvalue / ( ( $nextcount + 1 ) * $nextcount / 2 ) * 2 ) / 5 );
+							else {
+								if( count( $nextmoves ) > 1 ) {
+									if( $nextscore > 0 && $nextscore < 50 )
+										$nextscore = ( int )round( ( $nextscore * 4 + $throttle ) / 5 );
+								}
+								else if( abs( $nextscore ) > 20 && abs( $nextscore ) < 75 ) {
+									$nextscore = ( int )round( $nextscore * 9 / 10 );
+								}
+							}
 						}
 						if( $item != -$nextscore ) {
 							$moves1[ $key ] = -$nextscore;
@@ -1273,20 +1293,30 @@ function getAnalysisPath( $redis, $row, $banmoves, $ply, $enumlimit, $isbest, $l
 						arsort( $nextmoves );
 						$nextscore = reset( $nextmoves );
 						$throttle = getthrottle( $nextscore );
-						$normalize = 0;
+						$nextsum = 0;
 						$nextcount = 0;
-						$average = 0;
+						$totalvalue = 0;
 						foreach( $nextmoves as $record => $score ) {
-							if( $score >= $throttle )
+							if( $score >= $throttle ) {
 								$nextcount++;
-							if( abs( $nextscore ) < 10000 ) {
-								$weight = exp( ( $score - $nextscore ) / 10 );
-								$normalize += $weight;
-								$average += ( $score - $nextscore ) * $weight;
+								$nextsum = $nextsum + $score;
+								$totalvalue = $totalvalue + $nextsum;
 							}
+							else
+								break;
 						}
 						if( abs( $nextscore ) < 10000 ) {
-							$nextscore = ( int )round( $nextscore + $average / $normalize );
+							if( $nextcount > 1 )
+								$nextscore = ( int )round( ( $nextscore * 3 + $totalvalue / ( ( $nextcount + 1 ) * $nextcount / 2 ) * 2 ) / 5 );
+							else {
+								if( count( $nextmoves ) > 1 ) {
+									if( $nextscore > 0 && $nextscore < 50 )
+										$nextscore = ( int )round( ( $nextscore * 4 + $throttle ) / 5 );
+								}
+								else if( abs( $nextscore ) > 20 && abs( $nextscore ) < 75 ) {
+									$nextscore = ( int )round( $nextscore * 9 / 10 );
+								}
+							}
 						}
 						if( $item != -$nextscore ) {
 							$moves1[ $key ] = -$nextscore;
@@ -1844,8 +1874,11 @@ try{
 				$memcache_obj = new Memcache();
 				if( !$memcache_obj->pconnect('unix:///var/run/memcached/memcached.sock', 0) )
 					throw new Exception( 'Memcache error.' );
+				$ratelimit = $memcache_obj->get( 'RateLimit' );
+				if( $ratelimit === FALSE )
+					$ratelimit = 5;
 				$querylimit = $memcache_obj->get( 'QLimit::' . $_SERVER['REMOTE_ADDR'] );
-				if( $querylimit === FALSE || $querylimit < 1000 )
+				if( $querylimit === FALSE || $querylimit < $ratelimit )
 				{
 					$memcache_obj->add( 'QLimit::' . $_SERVER['REMOTE_ADDR'], 0, 0, 1 );
 					$memcache_obj->increment( 'QLimit::' . $_SERVER['REMOTE_ADDR'] );
